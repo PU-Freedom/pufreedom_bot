@@ -1,0 +1,10 @@
+aiogram==3.17.0
+sqlalchemy[asyncio]==2.0.37
+asyncpg==0.30.0
+alembic==1.14.0
+redis[hiredis]==5.2.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+python-dateutil==2.9.0
+nudenet==3.4.2
