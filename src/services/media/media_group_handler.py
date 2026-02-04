@@ -58,7 +58,7 @@ class MediaGroupHandler:
         replyChannelMessageId = None
         replyChannelChatId = None
         if count == 1 and message.reply_to_message:
-            mapping = await self.messageMappingRepo.getByUserMessage(
+            mapping = await self.messageMappingRepo.getByUserMessageOrLastEditMessage(
                 userChatId=message.reply_to_message.chat.id,
                 userMessageId=message.reply_to_message.message_id
             )
@@ -348,6 +348,7 @@ class MediaGroupHandler:
             logger.error(f"error sending media group: {e}", exc_info=True)
             raise
 
+    @staticmethod
     def _resolveMediaItemType(
         message: Message, 
         caption: str | None = None,

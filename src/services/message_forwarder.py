@@ -74,7 +74,7 @@ class MessageForwarderService:
         replyChannelMessageId = None
         replyChannelChatId = None
         if message.reply_to_message:
-            mapping = await self.messageMappingRepo.getByUserMessage(
+            mapping = await self.messageMappingRepo.getByUserMessageOrLastEditMessage(
                 userChatId=message.reply_to_message.chat.id,
                 userMessageId=message.reply_to_message.message_id
             )
