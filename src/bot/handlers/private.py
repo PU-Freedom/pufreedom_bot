@@ -14,11 +14,12 @@ router = Router(name="private")
 @handleMessageErrors("Failed to send welcome message")
 async def cmdStart(message: Message):
     await message.answer(
-        "Welcome to PU Freedom bruh\n\n"
-        "I mean.. you know what to do\n\n"
-        "media files (photos, videos, docs) are supported so GO KRAAAZY - aint nobody holding your freak here\n"
-        "polls are good to go too\n\n"
-        "NOTE: you can send up to 5 messages per minute"
+        "<b>🧃 Welcome to PU Freedom 🆓🏡</b>\n\n"
+        "<b>🐊 I mean.. you know what to do 😋🍽</b>\n\n"
+        "<b>🎥 Images and Videos are supported 👶🏿</b>\n"
+        "<b>If its something crazy</b>" 
+        "<b>--- you can always go E⬛️S⬛️T⬛️I⬛️ M⬛️D⬛️</b>\n\n"
+        "<b>We provide exclusive feature to REDACT your media contents with spoiler😉</b>\n"
     )
 
 @router.message(
