@@ -326,15 +326,23 @@ class MediaGroupHandler:
             )
             confirmText = "😘😍 Message sent"
             confirmText += " with 😍NSFW😍 spoilers 🔞" if hasSpoiler else " to the channel 😚☺️😽"
-            await self.bot.send_message(
-                chat_id=chatId,
-                text=confirmText,
-                reply_parameters=ReplyParameters(
-                    message_id=sentMessages[0].message_id,
-                    chat_id=settings.CHANNEL_ID
-                ),
-                reply_markup=keyboard
-            )
+            try:
+                await self.bot.send_message(
+                    chat_id=chatId,
+                    text=confirmText,
+                    reply_parameters=ReplyParameters(
+                        message_id=sentMessages[0].message_id,
+                        chat_id=settings.CHANNEL_ID
+                    ),
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.warning(f"[MEDIA_GROUP] reply_parameters failed: {e}, sending without")
+                await self.bot.send_message(
+                    chat_id=chatId,
+                    text=confirmText,
+                    reply_markup=keyboard
+                )
             logger.info(f"[MEDIA_GROUP] sent media group with {len(messages)} items to channel")
             if len(sentMessages) > 1:
                 firstId = sentMessages[0].message_id

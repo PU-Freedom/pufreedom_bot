@@ -25,7 +25,13 @@ async def cmdStart(message: Message):
 @router.message(
     F.chat.type == ChatType.PRIVATE,
     F.content_type.in_({
-        "text", "photo", "video", "animation", "document", "poll", "sticker"
+        "text", 
+        "photo", 
+        "video", 
+        "animation", 
+        "document", 
+        "poll", 
+        "sticker"
     })
 )
 @checkUserNotBanned

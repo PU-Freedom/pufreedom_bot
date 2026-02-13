@@ -62,19 +62,27 @@ class ReplyResolverService:
 
     def _resolveExternal(self, message: Message) -> ReplyParameters:
         externalReply = message.external_reply
+        
+        if not externalReply.chat or not externalReply.chat.id:
+            logger.error(f"[EXTERNAL] external_reply has NO CHAT INFO")
+            raise ValueError("external reply missing chat information")
+        
+        chatId = externalReply.chat.id
+        messageId = externalReply.message_id
+        logger.info(f"[EXTERNAL] resolved chatId={chatId}, messageId={messageId}")
         if message.quote and message.quote.text:
             logger.info(f"[EXTERNAL] has quote text: {message.quote.text[:50]}...")
             return ReplyParameters(
-                message_id=externalReply.message_id,
-                chat_id=externalReply.chat.id if externalReply.chat else None,
+                message_id=messageId,
+                chat_id=chatId,
                 quote=message.quote.text,
                 quote_parse_mode="HTML"
             )
         else:
-            logger.info(f"[EXTERNAL] no quote text -> skipping quote params")
+            logger.info(f"[EXTERNAL] no quote text")
             return ReplyParameters(
-                message_id=externalReply.message_id,
-                chat_id=externalReply.chat.id if externalReply.chat else None
+                message_id=messageId,
+                chat_id=chatId
             )
 
     async def _resolveDirect(
@@ -137,6 +145,15 @@ class ReplyResolverService:
             parsed = TelegramLinkParser.parseMessageLink(link)
             if parsed:
                 chatId, messageId = parsed
+                if isinstance(chatId, str):
+                    try:
+                        chat = await self.bot.get_chat(f"@{chatId}")
+                        chatId = chat.id
+                        logger.info(f"[LINK] resolved username '{chatId}' to numeric ID {chat.id}")
+                    except Exception as e:
+                        logger.error(f"[LINK] failed to resolve username to chat ID: {e}")
+                        return None
+                
                 logger.info(f"[LINK] resolved link: chatId={chatId}, messageId={messageId}")
                 return ReplyParameters(message_id=messageId, chat_id=chatId)
         return None

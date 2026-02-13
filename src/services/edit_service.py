@@ -60,14 +60,21 @@ class EditService:
                 editData["channelMessageId"],
                 canEdit=True
             )
-            await message.answer(
-                "<b>✅ Message edited successfully</b>",
-                reply_parameters=ReplyParameters(
-                    message_id=editData["channelMessageId"],
-                    chat_id=settings.CHANNEL_ID
-                ),
-                reply_markup=keyboard
-            )
+            try:
+                await message.answer(
+                    "<b>✅ Message edited successfully</b>",
+                    reply_parameters=ReplyParameters(
+                        message_id=editData["channelMessageId"],
+                        chat_id=settings.CHANNEL_ID
+                    ),
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.warning(f"[EDIT] reply_parameters failed: {e}, sending without")
+                await message.answer(
+                    "<b>✅ Message edited successfully</b>",
+                    reply_markup=keyboard
+                )
             return True
             
         except TelegramAPIError as e:
@@ -80,7 +87,7 @@ class EditService:
         except Exception as e:
             logger.error(f"error processing edit: {e}", exc_info=True)
             await message.reply("error occurred while editing")
-            return True        
+            return True
 
     async def _performEdit(self, message: Message, editData: dict):
         channelMessageId = editData["channelMessageId"]

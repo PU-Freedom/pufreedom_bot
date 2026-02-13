@@ -104,15 +104,23 @@ async def handleEditRequest(
         f"{separator}\n"
         f"<b>Send the new {'caption' if isCaptionFlag else 'text'}</b>"
     )
-    await callback.message.answer(
-        instructions,
-        parse_mode="HTML",
-        reply_markup=cancelKeyboard,
-        reply_parameters=ReplyParameters(
-            message_id=mapping.channelMessageId, 
-            chat_id=settings.CHANNEL_ID
+    try:
+        await callback.message.answer(
+            instructions,
+            parse_mode="HTML",
+            reply_markup=cancelKeyboard,
+            reply_parameters=ReplyParameters(
+                message_id=mapping.channelMessageId, 
+                chat_id=settings.CHANNEL_ID
+            )
         )
-    )
+    except Exception as e:
+        logger.warning(f"[EDIT] reply_parameters failed: {e}, sending without")
+        await callback.message.answer(
+            instructions,
+            parse_mode="HTML",
+            reply_markup=cancelKeyboard
+        )
     await callback.answer()
         
 @router.callback_query(F.data.startswith("nsfw_safe:"))

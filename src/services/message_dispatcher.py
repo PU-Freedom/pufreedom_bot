@@ -1,6 +1,7 @@
 from typing import Optional, NamedTuple
 from aiogram import Bot
 from aiogram.types import Message, ReplyParameters
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.enums import ContentType
 from services.text_handler import TextMessageHandler
 from services.poll_handler import PollMessageHandler
@@ -41,20 +42,49 @@ class MessageDispatcher:
             raise ChannelPostError(f"unsupported message type: {contentType}")
 
         logger.debug(f"[DISPATCHER] routing {contentType} message")
-        return await handler(
-            message=message,
-            replyParams=replyParams,
-            hasSpoiler=hasSpoiler,
-            overrideCaption=overrideCaption
-        )
+        try:
+            return await handler(
+                message=message,
+                replyParams=replyParams,
+                hasSpoiler=hasSpoiler,
+                overrideCaption=overrideCaption
+            )
+        except TelegramBadRequest as e:
+            if "REPLY_MESSAGE_ID_INVALID" in str(e) and replyParams:
+                logger.warning(f"[DISPATCHER] reply_parameters failed, adding reply context to text")
+                
+                replyPrefix = self._buildReplyPrefix(replyParams)
+                if contentType == ContentType.TEXT:
+                    overrideCaption = replyPrefix + (message.text or "")
+                else:
+                    overrideCaption = replyPrefix + (overrideCaption or message.caption or "")
+                return await handler(
+                    message=message,
+                    replyParams=None,
+                    hasSpoiler=hasSpoiler,
+                    overrideCaption=overrideCaption
+                )
+            else:
+                raise
+
+    def _buildReplyPrefix(self, replyParams: ReplyParameters) -> str:
+        from common import getMessageLink
+        messageLink = getMessageLink(replyParams.chat_id, replyParams.message_id)
+        return f"<b>↩️ <a href='{messageLink}'>Replying to message</a></b>\n\n"
 
     async def _handleText(
         self, 
         message: Message, 
         replyParams: Optional[ReplyParameters], 
+        overrideCaption: Optional[str] = None,
         **kwargs
     ) -> SendResult:
-        result = await self.textHandler.sendTextMessage(message, self.channelChatId, replyParams)
+        result = await self.textHandler.sendTextMessage(
+            message, 
+            self.channelChatId, 
+            replyParams,
+            overrideText=overrideCaption
+        )
         return SendResult(result.message_id, self.channelChatId, None, canEdit=True)
 
     async def _handlePhoto(

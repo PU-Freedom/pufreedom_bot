@@ -11,12 +11,20 @@ class TextMessageHandler:
         self,
         message: Message,
         channelChatId: int = settings.CHANNEL_ID,
-        replyParams: Optional[ReplyParameters] = None
+        replyParams: Optional[ReplyParameters] = None,
+        overrideText: Optional[str] = None
     ) -> Message:
-        return await self.bot.copy_message(
-            chat_id=channelChatId,
-            from_chat_id=message.chat.id,
-            message_id=message.message_id,
-            reply_parameters=replyParams
-        )
-    
+        if overrideText is not None:
+            return await self.bot.send_message(
+                chat_id=channelChatId,
+                text=overrideText,
+                parse_mode="HTML",
+                reply_parameters=replyParams
+            )
+        else:
+            return await self.bot.copy_message(
+                chat_id=channelChatId,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+                reply_parameters=replyParams
+            )

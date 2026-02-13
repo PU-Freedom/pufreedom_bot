@@ -9,7 +9,8 @@ from services.nsfw import NSFWChecker, NSFWDataManager
 from common import (
     buildMessageActionsKeyboardFromMessage,
     buildNSFWPromptKeyboard,
-    MappingUtil
+    MappingUtil,
+    TelegramLinkParser
 )
 from exceptions import (
     MessageForwardError,
@@ -137,17 +138,27 @@ class MessageForwarderService:
         originalUserMessageId: int = None,
         forceQuoteText: str = None
     ) -> None:
+        result = None
         try:
             replyParams = await self._resolveReplyParams(
                 message, forceReplyToMessageId, forceReplyToChatId, forceQuoteText
             )
             overrideCaption = None
+            if replyParams and not message.reply_to_message and not message.external_reply:
+                messageText = message.text or message.caption or ""
+                extractedLink = TelegramLinkParser.extractLinkFromText(messageText)
+                if extractedLink:
+                    cleanedText = messageText.replace(extractedLink, "").strip()
+                    logger.info(f"[FORWARDER] removed link from message: {extractedLink}")
+                    overrideCaption = cleanedText if cleanedText else None
+            
             if addWarning:
                 warningText = (
                     "<blockquote><b>⚠️ NSFW content warning</b>\n"
                     "This media was detected as NSFW</blockquote>\n\n"
                 )
-                overrideCaption = warningText + (message.caption or message.text or "")
+                baseText = overrideCaption or message.caption or message.text or ""
+                overrideCaption = warningText + baseText
             result = await self.dispatcher.send(
                 message,
                 replyParams=replyParams,
