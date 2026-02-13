@@ -210,16 +210,46 @@ class MessageForwarderService:
         elif result.sentMessage is None:
             from common import buildMessageActionsKeyboard
             keyboard = buildMessageActionsKeyboard(result.messageId, canEdit=result.canEdit)
-
-        await self.bot.send_message(
-            chat_id=originalMessage.chat.id,
-            text="😍 Your message was sent to the channel 💓💗",
-            reply_parameters=ReplyParameters(
-                message_id=result.messageId,
-                chat_id=result.chatId
-            ),
-            reply_markup=keyboard
-        )
+        confirmationText = "😍 Your message was sent to the channel 💓💗"
+        try:
+            await self.bot.send_message(
+                chat_id=originalMessage.chat.id,
+                text=confirmationText,
+                reply_parameters=ReplyParameters(
+                    message_id=result.messageId,
+                    chat_id=result.chatId
+                ),
+                reply_markup=keyboard
+            )
+            logger.info(f"[CONFIRMATION] sent with cross-chat reply to channel message {result.messageId}")
+            return
+        except Exception as e:
+            logger.warning(f"[CONFIRMATION] cross-chat reply failed: {e}")
+        
+        try:
+            await self.bot.send_message(
+                chat_id=originalMessage.chat.id,
+                text=confirmationText,
+                reply_parameters=ReplyParameters(
+                    message_id=originalMessage.message_id
+                ),
+                reply_markup=keyboard
+            )
+            logger.info(f"[CONFIRMATION] sent with reply to USER MESSAGE {originalMessage.message_id}")
+            return
+        except Exception as e:
+            logger.warning(f"[CONFIRMATION] reply to user message failed: {e}")
+        
+        try:
+            await self.bot.send_message(
+                chat_id=originalMessage.chat.id,
+                text=confirmationText,
+                reply_markup=keyboard
+            )
+            logger.info(f"[CONFIRMATION] sent WITHOUT reply parameters")
+        except Exception as e:
+            logger.error(f"[CONFIRMATION] all attempts failed: {e}")
+            raise
 
     def _logIncoming(self, message: Message):
         logger.info(f"[FORWARD_START] {'=' * 5} NEW MESSAGE {'=' * 5}")
