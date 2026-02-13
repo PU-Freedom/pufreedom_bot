@@ -39,7 +39,7 @@ class MessageDispatcher:
         contentType = message.content_type
         handler = self._handlers.get(contentType)
         if not handler:
-            raise ChannelPostError(f"unsupported message type: {contentType}")
+            raise ChannelPostError(f"Unsupported message type: {contentType}")
 
         logger.debug(f"[DISPATCHER] routing {contentType} message")
         try:

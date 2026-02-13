@@ -179,7 +179,7 @@ class MessageForwarderService:
         except RateLimitExceeded:
             raise
         except Exception as e:
-            logger.error(f"error sending to channel: {e}", exc_info=True)
+            logger.error(f"error in _sendToChannel: {e}", exc_info=True)
             raise MessageForwardError(str(e))
 
     async def _resolveReplyParams(
