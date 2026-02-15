@@ -29,7 +29,7 @@ class ReplyResolverService:
         if message.external_reply:
             logger.info(f"[RESOLVE] resolving external reply | messageId - {message.message_id}")
             result = self._resolveExternal(message)
-            logger.info(f"[RESOLVE] external reply RESOLVED: messageId={result.message_id}, chatId={result.chat_id}")
+            logger.info(f"[RESOLVE] external reply RESOLVED: messageId={result.message_id if result else None}, chatId={result.chat_id if result else None}")
             return result
 
         if message.reply_to_message:
@@ -60,7 +60,7 @@ class ReplyResolverService:
         logger.info(f"[RESOLVE] no reply found for message {message.message_id}")
         return None
 
-    def _resolveExternal(self, message: Message) -> ReplyParameters:
+    def _resolveExternal(self, message: Message) -> Optional[ReplyParameters]:
         externalReply = message.external_reply
         
         if not externalReply.chat or not externalReply.chat.id:
@@ -145,6 +145,15 @@ class ReplyResolverService:
             parsed = TelegramLinkParser.parseMessageLink(link)
             if parsed:
                 chatId, messageId = parsed
+                if isinstance(chatId, str):
+                    try:
+                        chat = await self.bot.get_chat(f"@{chatId}")
+                        chatId = chat.id
+                        logger.info(f"[LINK] resolved username '{chatId}' to numeric ID {chat.id}")
+                    except Exception as e:
+                        logger.error(f"[LINK] failed to resolve username to chat ID: {e}")
+                        return None
+                
                 if isinstance(chatId, str):
                     try:
                         chat = await self.bot.get_chat(f"@{chatId}")
