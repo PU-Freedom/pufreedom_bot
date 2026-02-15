@@ -29,7 +29,7 @@ class ReplyResolverService:
         if message.external_reply:
             logger.info(f"[RESOLVE] resolving external reply | messageId - {message.message_id}")
             result = self._resolveExternal(message)
-            logger.info(f"[RESOLVE] external reply RESOLVED: messageId={result.message_id}, chatId={result.chat_id}")
+            logger.info(f"[RESOLVE] external reply RESOLVED: messageId={result.message_id if result else None}, chatId={result.chat_id if result else None}")
             return result
 
         if message.reply_to_message:
@@ -60,30 +60,40 @@ class ReplyResolverService:
         logger.info(f"[RESOLVE] no reply found for message {message.message_id}")
         return None
 
-    def _resolveExternal(self, message: Message) -> ReplyParameters:
+    def _resolveExternal(self, message: Message) -> Optional[ReplyParameters]:
         externalReply = message.external_reply
-        
-        if not externalReply.chat or not externalReply.chat.id:
-            logger.error(f"[EXTERNAL] external_reply has NO CHAT INFO")
-            raise ValueError("external reply missing chat information")
-        
-        chatId = externalReply.chat.id
-        messageId = externalReply.message_id
-        logger.info(f"[EXTERNAL] resolved chatId={chatId}, messageId={messageId}")
-        if message.quote and message.quote.text:
-            logger.info(f"[EXTERNAL] has quote text: {message.quote.text[:50]}...")
-            return ReplyParameters(
-                message_id=messageId,
-                chat_id=chatId,
-                quote=message.quote.text,
-                quote_parse_mode="HTML"
+        chatId = None
+        if externalReply.chat:
+            chatId = externalReply.chat.id
+        elif hasattr(externalReply, 'origin') and externalReply.origin:
+            if hasattr(externalReply.origin, 'chat') and externalReply.origin.chat:
+                chatId = externalReply.origin.chat.id
+        if not chatId:
+            logger.info("[EXTERNAL] no chatId - skipping reply context")
+            return None
+        if chatId != settings.CHANNEL_ID:
+            logger.info(
+                f"[EXTERNAL] reply to chat {chatId}"
+                f"skipping - bot not member."
             )
-        else:
-            logger.info(f"[EXTERNAL] no quote text")
-            return ReplyParameters(
-                message_id=messageId,
-                chat_id=chatId
-            )
+            return None
+        logger.info(f"[EXTERNAL] reply to our channel - creating params")
+        try:
+            if message.quote and message.quote.text:
+                return ReplyParameters(
+                    message_id=externalReply.message_id,
+                    chat_id=chatId,
+                    quote=message.quote.text,
+                    quote_parse_mode="HTML"
+                )
+            else:
+                return ReplyParameters(
+                    message_id=externalReply.message_id,
+                    chat_id=chatId
+                )
+        except Exception as e:
+            logger.error(f"[EXTERNAL] failed to create params: {e}")
+            return None
 
     async def _resolveDirect(
         self, 
