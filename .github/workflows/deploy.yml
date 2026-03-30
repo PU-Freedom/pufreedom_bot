@@ -22,5 +22,6 @@ jobs:
             git pull origin master
             cd /opt/apps
             docker compose build --no-cache pufreedom-bot
+            docker compose run --rm pufreedom-bot alembic upgrade head
             docker compose up -d --force-recreate pufreedom-bot
             docker image prune -f
