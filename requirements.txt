@@ -1,6 +1,7 @@
 aiogram==3.17.0
 sqlalchemy[asyncio]==2.0.37
 asyncpg==0.30.0
+psycopg2-binary==2.9.10
 alembic==1.14.0
 redis[hiredis]==5.2.1
 pydantic==2.10.4
