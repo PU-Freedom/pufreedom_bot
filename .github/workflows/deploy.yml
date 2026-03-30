@@ -1,0 +1,26 @@
+name: deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: vars.DEPLOY_ENABLED == 'true'
+    steps:
+      - name: cd dvps
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            cd /opt/apps/pufreedom-bot
+            git pull origin master
+            cd /opt/apps
+            docker compose build --no-cache pufreedom-bot
+            docker compose up -d --force-recreate pufreedom-bot
+            docker image prune -f
