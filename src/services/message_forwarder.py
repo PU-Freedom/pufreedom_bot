@@ -86,25 +86,9 @@ class MessageForwarderService:
 
     async def _handleNSFWCheck(self, message: Message, user):
         logger.info(f"[NSFW_CHECK] checking messageId - {message.message_id}")
-        replyChannelMessageId = None
-        replyChannelChatId = None
-        if message.reply_to_message:
-            mapping = await self.messageMappingRepo.getByUserMessageOrLastEditMessage(
-                userChatId=message.reply_to_message.chat.id,
-                userMessageId=message.reply_to_message.message_id
-            )
-            if mapping:
-                replyChannelMessageId = mapping.channelMessageId
-                replyChannelChatId = mapping.channelChatId
-                logger.info(
-                    f"[NSFW_CHECK] reply target mapped: "
-                    f"channelMessageId={replyChannelMessageId}"
-                )
-            else:
-                logger.warning(
-                    f"[NSFW_CHECK] no mapping for reply target "
-                    f"userMessageId={message.reply_to_message.message_id}"
-                )
+        replyParams = await self.replyResolver.resolve(message, self.CHANNEL_ID)
+        replyChannelMessageId = replyParams.message_id if replyParams else None
+        replyChannelChatId = replyParams.chat_id if replyParams else None
         quoteText = message.quote.text if message.quote else None
         if settings.ENFORCED_NSFW_CHECK:
             isSafe, reason = await self.nsfwChecker.checkMessage(self.bot, message)

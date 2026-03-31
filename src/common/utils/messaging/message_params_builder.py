@@ -27,9 +27,10 @@ class MessageParamsBuilder:
         message: Message,
         overrideCaption: Optional[str] = None
     ) -> None:
-        if overrideCaption:
-            params["caption"] = overrideCaption
-            params["parse_mode"] = "HTML"
+        if overrideCaption is not None:
+            if overrideCaption:
+                params["caption"] = overrideCaption
+                params["parse_mode"] = "HTML"
         elif message.caption:
             params["caption"] = message.caption
             params["caption_entities"] = message.caption_entities

@@ -14,19 +14,11 @@ class ReplyParametersBuilder:
     ) -> ReplyParameters:
         if quoteText:
             logger.info(f"[{source}] including quote: {quoteText[:50]}...")
-            try:
-                return ReplyParameters(
-                    message_id=messageId,
-                    chat_id=chatId,
-                    quote=quoteText,
-                    quote_parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.warning(f"[{source}] failed to add quote, creating without: {e}")
-                return ReplyParameters(
-                    message_id=messageId,
-                    chat_id=chatId
-                )
+            return ReplyParameters(
+                message_id=messageId,
+                chat_id=chatId,
+                quote=quoteText,
+            )
         else:
             return ReplyParameters(
                 message_id=messageId,

@@ -1,9 +1,19 @@
 from typing import Optional, Tuple
 from aiogram import Bot
 from aiogram.types import Message, ReplyParameters
-from db import UserRepository, CommentMappingRepository, ChannelThreadMappingRepository
+from db import (
+    UserRepository, 
+    CommentMappingRepository, 
+    ChannelThreadMappingRepository
+)
 from services.messaging import MessageDispatcher
-from common import TelegramLinkParser, buildCommentActionsKeyboard, MESSAGE_TYPE_CONFIGS, isSupportedType
+from common import (
+    TelegramLinkParser, 
+    buildCommentActionsKeyboard, 
+    MESSAGE_TYPE_CONFIGS, 
+    isSupportedType, 
+    getMessageLink
+)
 from config import settings
 import logging
 
@@ -100,7 +110,7 @@ class AnonCommentService:
             result = await self.groupDispatcher.send(
                 message,
                 replyParams=replyParams,
-                overrideCaption=commentText,
+                overrideCaption=commentText if commentText is not None else ("" if message.caption else None),
                 replyMarkup=keyboard,
             )
 
@@ -116,6 +126,9 @@ class AnonCommentService:
                 f"[ANON] comment posted: groupMessageId={result.messageId}, "
                 f"threadId={threadId}, userId={user.id}"
             )
+
+            if replyToMessageId:
+                await self._notifyRepliedAnonAuthor(replyToMessageId, result.messageId, commentText)
 
             if not isInGroup:
                 confirmKeyboard = buildCommentActionsKeyboard(
@@ -199,6 +212,36 @@ class AnonCommentService:
 
         # private chat with no resolvable link
         return (None, None)
+
+    async def _notifyRepliedAnonAuthor(
+        self,
+        repliedToMessageId: int,
+        replyMessageId: int,
+        replyText: Optional[str]
+    ) -> None:
+        mapping = await self.commentMappingRepo.getByGroupMessageId(
+            groupChatId=settings.DISCUSSION_GROUP_ID,
+            groupMessageId=repliedToMessageId
+        )
+        if not mapping:
+            return
+        commentLink = getMessageLink(settings.DISCUSSION_GROUP_ID, repliedToMessageId)
+        replyLink = getMessageLink(settings.DISCUSSION_GROUP_ID, replyMessageId)
+        messageParts = [f'<i><b>💬 Someone replied to <a href="{commentLink}">your anonymous comment</a></b></i>']
+        if replyText:
+            preview = (replyText[:200] + "...") if len(replyText) > 200 else replyText
+            messageParts.append(f"\n<b>📝 Preview:</b>\n<blockquote>{preview}</blockquote>")
+        messageParts.append(f'\n<b><a href="{replyLink}">View reply</a></b>')
+        try:
+            await self.bot.send_message(
+                chat_id=mapping.userChatId,
+                text="\n".join(messageParts),
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            logger.info(f"[ANON] notified user {mapping.userId} about anon reply to comment {repliedToMessageId}")
+        except Exception as e:
+            logger.warning(f"[ANON] failed to notify anon comment author {mapping.userId}: {e}")
 
     async def _lookupThreadId(self, channelPostId: int) -> Optional[int]:
         mapping = await self.channelThreadRepo.getByChannelPostId(channelPostId)
