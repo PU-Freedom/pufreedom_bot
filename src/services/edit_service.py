@@ -101,12 +101,11 @@ class EditService:
         channelMessageId = editData["channelMessageId"]
         targetChatId = editData.get("targetChatId", settings.CHANNEL_ID)
         isComment = editData.get("isComment", False)
-
+        keyboard = None
+        
         if isComment:
             from common import buildCommentActionsKeyboard
             keyboard = buildCommentActionsKeyboard(canEdit=True)
-        else:
-            keyboard = buildMessageActionsKeyboard(channelMessageId, canEdit=True)
 
         if editData.get("isCaption", False):
             await self._editCaption(message, channelMessageId, targetChatId, keyboard)
