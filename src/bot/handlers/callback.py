@@ -1,17 +1,14 @@
 from aiogram import Router, F, Bot
-from aiogram.types import (
-    CallbackQuery, 
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton, 
-    ReplyParameters
-)
+from aiogram.types import CallbackQuery, ReplyParameters
 from common import (
-    requireMessageOwnership, 
-    isCaption, 
+    requireMessageOwnership,
+    isCaption,
     entitiesToHtml,
     handleCallbackErrors,
     handleDeleteErrors,
-    handleEditErrors
+    handleEditErrors,
+    buildCancelEditKeyboard,
+    buildEditModeMessage,
 )
 from services import (
     EditService, 
@@ -53,6 +50,88 @@ async def handleDelete(
         await redis.delete(f"media_group_siblings:{channelMessageId}")
     await callback.message.edit_text("🗑 Message deleted from channel")
 
+@router.callback_query(F.data.startswith("comment_delete"))
+async def handleCommentDelete(
+    callback: CallbackQuery,
+    bot: Bot,
+    commentMappingRepo,
+    userRepo,
+):
+    parts = callback.data.split(":")
+    groupMessageId = int(parts[1]) if len(parts) > 1 else callback.message.message_id
+    mapping = await commentMappingRepo.getByGroupMessageId(
+        groupChatId=settings.DISCUSSION_GROUP_ID,
+        groupMessageId=groupMessageId
+    )
+    if not mapping:
+        await callback.answer("❌ Comment not found or already deleted", show_alert=True)
+        return
+
+    user = await userRepo.getByTelegramId(callback.from_user.id)
+    if not user or (mapping.userId != user.id and not user.isAdmin):
+        await callback.answer("❌ You can only delete your own comments", show_alert=True)
+        return
+
+    try:
+        await bot.delete_message(chat_id=settings.DISCUSSION_GROUP_ID, message_id=groupMessageId)
+        await commentMappingRepo.updateById(mapping.id, isDeleted=True)
+        await callback.answer("🗑 Comment deleted")
+    except Exception as e:
+        logger.error(f"[COMMENT DELETE] failed: {e}", exc_info=True)
+        await callback.answer("❌ Failed to delete", show_alert=True)
+
+@router.callback_query(F.data.startswith("comment_edit"))
+async def handleCommentEditRequest(
+    callback: CallbackQuery,
+    bot: Bot,
+    commentMappingRepo,
+    userRepo,
+    editService: EditService,
+):
+    parts = callback.data.split(":")
+    groupMessageId = int(parts[1]) if len(parts) > 1 else callback.message.message_id
+    mapping = await commentMappingRepo.getByGroupMessageId(
+        groupChatId=settings.DISCUSSION_GROUP_ID,
+        groupMessageId=groupMessageId
+    )
+    if not mapping:
+        await callback.answer("❌ Comment not found or already deleted", show_alert=True)
+        return
+
+    user = await userRepo.getByTelegramId(callback.from_user.id)
+    if not user or mapping.userId != user.id:
+        await callback.answer("❌ You can only edit your own comments", show_alert=True)
+        return
+
+    try:
+        groupMessage = await _fetchAndDeleteForwardedMessage(
+            bot, callback.from_user.id, settings.DISCUSSION_GROUP_ID, groupMessageId
+        )
+        isCaptionFlag = isCaption(groupMessage)
+        currentText = groupMessage.caption if isCaptionFlag else (groupMessage.text or "")
+        currentEntities = groupMessage.caption_entities if isCaptionFlag else groupMessage.entities
+        formattedText = entitiesToHtml(currentText, currentEntities) if currentText else "(no text)"
+
+        await editService.activateEditMode(
+            userId=callback.from_user.id,
+            channelMessageId=groupMessageId,
+            userMessageId=mapping.userMessageId,
+            isCaption=isCaptionFlag,
+            targetChatId=settings.DISCUSSION_GROUP_ID,
+            isComment=True,
+        )
+        await bot.send_message(
+            chat_id=callback.from_user.id,
+            text=buildEditModeMessage(formattedText, isCaptionFlag),
+            parse_mode="HTML",
+            reply_markup=buildCancelEditKeyboard()
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"[COMMENT_EDIT] failed: {e}", exc_info=True)
+        await callback.answer("❌ Failed to start edit mode", show_alert=True)
+
+
 @router.callback_query(F.data == "cancel_edit")
 @handleCallbackErrors("Failed to cancel edit mode")
 async def cancelEdit(callback: CallbackQuery, editService: EditService):
@@ -71,19 +150,12 @@ async def handleEditRequest(
 ):
     channelMessageId = kwargs['channelMessageId']
     mapping = kwargs['mapping']
-    channelMessage = await bot.forward_message(
-        chat_id=callback.from_user.id,
-        from_chat_id=settings.CHANNEL_ID,
-        message_id=channelMessageId
-    )
-    await bot.delete_message(
-        chat_id=callback.from_user.id,
-        message_id=channelMessage.message_id
+    channelMessage = await _fetchAndDeleteForwardedMessage(
+        bot, callback.from_user.id, settings.CHANNEL_ID, channelMessageId
     )
     isCaptionFlag = isCaption(channelMessage)
     currentText = channelMessage.caption if isCaptionFlag else (channelMessage.text or "")
     currentEntities = channelMessage.caption_entities if isCaptionFlag else channelMessage.entities
-    
     formattedText = entitiesToHtml(currentText, currentEntities) if currentText else "(no text)"
     logger.debug(f'isCaption flag - {isCaptionFlag}')
     await editService.activateEditMode(
@@ -92,25 +164,15 @@ async def handleEditRequest(
         userMessageId=mapping.userMessageId,
         isCaption=isCaptionFlag
     )
-    cancelKeyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚫 Cancel edit", callback_data="cancel_edit")]
-    ])
-    separator = '-' * 10
-    instructions = (
-        f"<b>✏️ Edit mode activated</b>\n\n"
-        f"<b>Current text:</b>\n"
-        f"{separator}\n"
-        f"<blockquote>{formattedText}</blockquote>\n"
-        f"{separator}\n"
-        f"<b>Send the new {'caption' if isCaptionFlag else 'text'}</b>"
-    )
+    instructions = buildEditModeMessage(formattedText, isCaptionFlag)
+    cancelKeyboard = buildCancelEditKeyboard()
     try:
         await callback.message.answer(
             instructions,
             parse_mode="HTML",
             reply_markup=cancelKeyboard,
             reply_parameters=ReplyParameters(
-                message_id=mapping.channelMessageId, 
+                message_id=mapping.channelMessageId,
                 chat_id=settings.CHANNEL_ID
             )
         )
@@ -179,14 +241,8 @@ async def _handleNSFWDecision(
 
     singleMediaData = await nsfwDataManager.retrieveSingleMedia(messageId)
     if singleMediaData:
-        originalMessage = await bot.forward_message(
-            chat_id=callback.from_user.id,
-            from_chat_id=singleMediaData['messageChatId'],
-            message_id=singleMediaData['messageId']
-        )
-        await bot.delete_message(
-            chat_id=callback.from_user.id,
-            message_id=originalMessage.message_id
+        originalMessage = await _fetchAndDeleteForwardedMessage(
+            bot, callback.from_user.id, singleMediaData['messageChatId'], singleMediaData['messageId']
         )
         user = await messageForwarder.userRepo.getById(singleMediaData['userId'])
         await messageForwarder._sendToChannel(
@@ -219,15 +275,21 @@ async def _handleNSFWDecision(
     ]
     user = await messageForwarder.userRepo.getById(mediaGroupData['userId'])
     await mediaGroupHandler.sendToChannel(
-        messageIds, 
-        user, 
+        messageIds,
+        user,
         mediaGroupData['chatId'],
         hasSpoiler=hasSpoiler,
         addWarning=False,
         forceReplyToMessageId=mediaGroupData.get('replyToMessageId'),
         forceReplyToChatId=mediaGroupData.get('replyToChatId'),
-        forceQuoteText=mediaGroupData.get('quoteText')
+        forceQuoteText=mediaGroupData.get('quoteText'),
+        alias=user.alias
     )
     await nsfwDataManager.deleteMediaGroup(messageId)
     await callback.message.delete()
     await callback.answer()
+
+async def _fetchAndDeleteForwardedMessage(bot: Bot, userId: int, fromChatId: int, messageId: int):
+    msg = await bot.forward_message(chat_id=userId, from_chat_id=fromChatId, message_id=messageId)
+    await bot.delete_message(chat_id=userId, message_id=msg.message_id)
+    return msg

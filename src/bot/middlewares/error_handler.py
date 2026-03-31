@@ -17,7 +17,8 @@ class ErrorHandlerMiddleware(BaseMiddleware):
     
     !NOTE this middleware only exists to catch anything that SLIPS THROUGH those decorators
     !NOTE if you see logs from here 
-        -> something upstream is MISSING ERROR HANDLING!!!!!!
+        -> something upstream is MISSING ERROR HANDLING AAHHHHHHHHH!!!!!!
+        -> TELL ADMIN TO KHS!!!
     """
     async def __call__(
         self,

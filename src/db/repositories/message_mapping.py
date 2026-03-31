@@ -94,7 +94,6 @@ class MessageMappingRepository(BaseRepository[MessageMapping]):
             channelMessageId=channelMessageId
         )
         await self.session.flush()
-        await self.session.commit()  
         return mapping
     
     async def markAsDeleted(
@@ -131,4 +130,3 @@ class MessageMappingRepository(BaseRepository[MessageMapping]):
             )
             .values(userLastEditMessageId=lastEditMessageId)
         )
-        await self.session.commit()

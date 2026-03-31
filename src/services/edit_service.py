@@ -23,20 +23,24 @@ class EditService:
         return data is not None
     
     async def activateEditMode(
-        self, 
-        userId: int, 
+        self,
+        userId: int,
         channelMessageId: int,
         userMessageId: int,
         isCaption: bool = False,
+        targetChatId: int = None,
+        isComment: bool = False,
     ) -> None:
         key = f"editing:{userId}"
         data = {
             "channelMessageId": channelMessageId,
             "userMessageId": userMessageId,
             "mode": "editing",
-            "isCaption": isCaption
+            "isCaption": isCaption,
+            "targetChatId": targetChatId or settings.CHANNEL_ID,
+            "isComment": isComment,
         }
-        logger.info(f"activating edit mode for user {userId}, channelMessageId: {channelMessageId}, isCaption: {isCaption}")
+        logger.info(f"activating edit mode for user {userId}, channelMessageId: {channelMessageId}, isCaption: {isCaption}, isComment: {isComment}")
         await self.redis.setex(key, 600, json.dumps(data))
     async def deactivateEditMode(self, userId: int) -> None:
         await self.redis.delete(f"editing:{userId}")
@@ -50,29 +54,33 @@ class EditService:
             if isMediaMessage(message):
                 await message.reply(
                     "<b>🥀 Hahaa you can NOT send/change media files dummo 😂✌️</b>\n\n"
-                    "<b>You can only edit the text/caption. Please send the new text as a <i>PLAIN TEXT MESSAGE</i> 😯✍️</b>",
+                    "<b>You can only edit the text/caption. Send the new text as a <i>PLAIN TEXT MESSAGE</i> 😯✍️</b>",
                     parse_mode="HTML"
                 )
                 return True
             await self._performEdit(message, editData)
             await self.redis.delete(key)
-            keyboard = buildMessageActionsKeyboard(
-                editData["channelMessageId"],
-                canEdit=True
-            )
+            targetChatId = editData.get("targetChatId", settings.CHANNEL_ID)
+            isComment = editData.get("isComment", False)
+            confirmationText = "<b>💗🥰 Message edited successfully ☺️💓</b>"
+            if isComment:
+                from common import buildCommentActionsKeyboard
+                keyboard = buildCommentActionsKeyboard(canEdit=True, groupMessageId=editData["channelMessageId"])
+            else:
+                keyboard = buildMessageActionsKeyboard(editData["channelMessageId"], canEdit=True)
             try:
                 await message.answer(
-                    "<b>✅ Message edited successfully</b>",
+                    confirmationText,
                     reply_parameters=ReplyParameters(
                         message_id=editData["channelMessageId"],
-                        chat_id=settings.CHANNEL_ID
+                        chat_id=targetChatId
                     ),
                     reply_markup=keyboard
                 )
             except Exception as e:
                 logger.warning(f"[EDIT] reply_parameters failed: {e}, sending without")
                 await message.answer(
-                    "<b>✅ Message edited successfully</b>",
+                    confirmationText,
                     reply_markup=keyboard
                 )
             return True
@@ -91,37 +99,49 @@ class EditService:
 
     async def _performEdit(self, message: Message, editData: dict):
         channelMessageId = editData["channelMessageId"]
-        if editData.get("isCaption", False):
-            await self._editCaption(message, channelMessageId)
+        targetChatId = editData.get("targetChatId", settings.CHANNEL_ID)
+        isComment = editData.get("isComment", False)
+
+        if isComment:
+            from common import buildCommentActionsKeyboard
+            keyboard = buildCommentActionsKeyboard(canEdit=True)
         else:
-            await self._editText(message, channelMessageId)
+            keyboard = buildMessageActionsKeyboard(channelMessageId, canEdit=True)
 
-        await self.messageMappingRepo.updateLastEditMessageId(
-            userMessageId=editData["userMessageId"],
-            userChatId=message.from_user.id,
-            lastEditMessageId=message.message_id
-        )
+        if editData.get("isCaption", False):
+            await self._editCaption(message, channelMessageId, targetChatId, keyboard)
+        else:
+            await self._editText(message, channelMessageId, targetChatId, keyboard)
 
-    async def _editCaption(self, message: Message, channelMessageId: int):
+        if not isComment:
+            await self.messageMappingRepo.updateLastEditMessageId(
+                userMessageId=editData["userMessageId"],
+                userChatId=message.from_user.id,
+                lastEditMessageId=message.message_id
+            )
+
+    async def _editCaption(self, message: Message, channelMessageId: int, targetChatId: int, replyMarkup=None):
         newContent = message.text or message.caption
         entities = message.entities or message.caption_entities
         if not newContent:
             raise ValueError("<b>📰 Send text or media with caption to edit foo</b>")
         await self.bot.edit_message_caption(
-            chat_id=settings.CHANNEL_ID,
+            chat_id=targetChatId,
             message_id=channelMessageId,
             caption=newContent,
             caption_entities=entities,
-            parse_mode=None
+            parse_mode=None,
+            reply_markup=replyMarkup,
         )
 
-    async def _editText(self, message: Message, channelMessageId: int):
+    async def _editText(self, message: Message, channelMessageId: int, targetChatId: int, replyMarkup=None):
         if not message.text:
             raise ValueError("<b>📝 Send a text message to edit bruh</b>")
         await self.bot.edit_message_text(
-            chat_id=settings.CHANNEL_ID,
+            chat_id=targetChatId,
             message_id=channelMessageId,
             text=message.text,
             entities=message.entities,
-            parse_mode=None
+            parse_mode=None,
+            reply_markup=replyMarkup,
         )

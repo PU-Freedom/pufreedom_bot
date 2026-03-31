@@ -62,4 +62,37 @@ class UserRepository(BaseRepository[User]):
         user.isBanned = False
         await self.session.flush()
         return True
+
+    async def getByAlias(self, alias: str) -> Optional[User]:
+        result = await self.session.execute(
+            select(User).where(func.lower(User.alias) == alias.lower())
+        )
+        return result.scalar_one_or_none()
+
+    async def setAlias(self, userId: int, alias: str) -> bool:
+        """
+        Sets alias for a user. Alias is stored lowercase.
+        Returns False if alias is already taken by another user.
+        """
+        existing = await self.getByAlias(alias)
+        if existing and existing.id != userId:
+            return False
+        result = await self.session.execute(
+            select(User).where(User.id == userId)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            return False
+        user.alias = alias
+        await self.session.flush()
+        return True
+
+    async def clearAlias(self, userId: int) -> None:
+        result = await self.session.execute(
+            select(User).where(User.id == userId)
+        )
+        user = result.scalar_one_or_none()
+        if user and user.alias:
+            user.alias = None
+            await self.session.flush()
     

@@ -1,8 +1,11 @@
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     BOT_TOKEN: str
     CHANNEL_ID: int
+    CHANNEL_USERNAME: Optional[str] = None # w/o @
+    DISCUSSION_GROUP_ID: Optional[int] = None
     
     DATABASE_URL: str
     DB_ECHO: bool = False

@@ -2,19 +2,24 @@ from aiogram import Bot
 from aiogram.types import Message, ReplyParameters
 from db import UserRepository, MessageMappingRepository
 from services.reply_resolver import ReplyResolverService
-from services.rate_limiter import RateLimiterService
+from services.rate_limiting import RateLimiterService
 from services.media import MediaGroupHandler
-from services.message_dispatcher import MessageDispatcher
-from services.nsfw import NSFWChecker, NSFWDataManager
+from services.messaging import MessageDispatcher
+from services.moderation import NSFWChecker, NSFWDataManager
+from services.subscription_checker import SubscriptionCheckerService
 from common import (
-    buildMessageActionsKeyboardFromMessage,
+    buildMessageActionsKeyboard,
     buildNSFWPromptKeyboard,
+    buildAliasKeyboard,
     MappingUtil,
-    TelegramLinkParser
+    TelegramLinkParser,
+    ReplyParametersBuilder,
+    entitiesToHtml,
 )
 from exceptions import (
     MessageForwardError,
-    RateLimitExceeded
+    RateLimitExceeded,
+    NotSubscribedError,
 )
 from config import settings
 import logging
@@ -46,6 +51,7 @@ class MessageForwarderService:
             bot, userRepo, messageMappingRepo, replyResolver, nsfwChecker, redis
         )
         self.nsfwDataManager = NSFWDataManager(redis)
+        self.subscriptionChecker = SubscriptionCheckerService(bot, self.CHANNEL_ID)
 
     async def forwardMessage(self, message: Message) -> None:
         self._logIncoming(message)
@@ -58,6 +64,14 @@ class MessageForwarderService:
         if user.isBanned:
             await message.reply("❌ You are banned from using this bot 🚮")
             return
+
+        isSubscribed, subStatus = await self.subscriptionChecker.isSubscribed(message.from_user.id)
+        if not isSubscribed:
+            logger.info(f"[SUB_CHECK] user {message.from_user.id} blocked - status={subStatus}")
+            if user.alias:
+                await self.userRepo.clearAlias(user.id)
+                logger.info(f"[SUB_CHECK] cleared alias for unsubscribed user {user.telegramId}")
+            raise NotSubscribedError(status=subStatus)
 
         await self.rateLimiter.checkRateLimit(message.from_user.id)
         if message.media_group_id:
@@ -146,12 +160,15 @@ class MessageForwarderService:
             overrideCaption = None
             if replyParams and not message.reply_to_message and not message.external_reply:
                 messageText = message.text or message.caption or ""
-                extractedLink = TelegramLinkParser.extractLinkFromText(messageText)
-                if extractedLink:
-                    cleanedText = messageText.replace(extractedLink, "").strip()
-                    logger.info(f"[FORWARDER] removed link from message: {extractedLink}")
-                    overrideCaption = cleanedText if cleanedText else None
-            
+                if messageText:
+                    entities = message.entities or message.caption_entities
+                    htmlText = entitiesToHtml(messageText, entities) if entities else messageText
+                    extractedLink = TelegramLinkParser.extractLinkFromText(htmlText)
+                    if extractedLink:
+                        cleanedText = htmlText.replace(extractedLink, "").strip()
+                        logger.info(f"[FORWARDER] removing link from message: {extractedLink}")
+                        overrideCaption = cleanedText if cleanedText else None
+
             if addWarning:
                 warningText = (
                     "<blockquote><b>⚠️ NSFW content warning</b>\n"
@@ -159,12 +176,28 @@ class MessageForwarderService:
                 )
                 baseText = overrideCaption or message.caption or message.text or ""
                 overrideCaption = warningText + baseText
+
+            alias = user.alias
             result = await self.dispatcher.send(
                 message,
                 replyParams=replyParams,
                 hasSpoiler=hasSpoiler,
-                overrideCaption=overrideCaption
+                overrideCaption=overrideCaption,
             )
+
+            if alias:
+                try:
+                    await self.bot.edit_message_reply_markup(
+                        chat_id=self.CHANNEL_ID,
+                        message_id=result.messageId,
+                        reply_markup=buildAliasKeyboard(alias)
+                    )
+                except Exception as e:
+                    logger.warning(f"[ALIAS] failed to attach alias keyboard to {result.messageId}: {e}")
+                if settings.DISCUSSION_GROUP_ID:
+                    await self.redis.setex(f"pending_alias:{result.messageId}", 60, alias)
+                    logger.info(f"[ALIAS] stored pending alias for channel msg {result.messageId}")
+
             await self.rateLimiter.recordMessage(message.from_user.id)
             mappingUserMessageId = originalUserMessageId or message.message_id
             await MappingUtil.createAndLog(
@@ -179,7 +212,7 @@ class MessageForwarderService:
         except RateLimitExceeded:
             raise
         except Exception as e:
-            logger.error(f"error sending to channel: {e}", exc_info=True)
+            logger.error(f"error in _sendToChannel: {e}", exc_info=True)
             raise MessageForwardError(str(e))
 
     async def _resolveReplyParams(
@@ -195,18 +228,12 @@ class MessageForwarderService:
                 f"messageId={forceReplyToMessageId}, chatId={forceReplyToChatId}, "
                 f"hasQuote={forceQuoteText is not None}"
             )
-            params = ReplyParameters(
-                message_id=forceReplyToMessageId,
-                chat_id=forceReplyToChatId
+            return ReplyParametersBuilder.build(
+                messageId=forceReplyToMessageId,
+                chatId=forceReplyToChatId,
+                quoteText=forceQuoteText,
+                source="FORWARDER_FORCED"
             )
-            if forceQuoteText:
-                params = ReplyParameters(
-                    message_id=forceReplyToMessageId,
-                    chat_id=forceReplyToChatId,
-                    quote=forceQuoteText,
-                    quote_parse_mode="HTML"
-                )
-            return params
         replyParams = await self.replyResolver.resolve(message, self.CHANNEL_ID)
         if replyParams:
             logger.info(f"[FORWARDER] resolved reply: messageId={replyParams.message_id}, chatId={replyParams.chat_id}")
@@ -216,11 +243,7 @@ class MessageForwarderService:
     
     async def _sendConfirmation(self, originalMessage: Message, result) -> None:
         keyboard = None
-        if result.sentMessage:
-            keyboard = buildMessageActionsKeyboardFromMessage(result.messageId, result.sentMessage)
-        elif result.sentMessage is None:
-            from common import buildMessageActionsKeyboard
-            keyboard = buildMessageActionsKeyboard(result.messageId, canEdit=result.canEdit)
+        keyboard = buildMessageActionsKeyboard(result.messageId, canEdit=result.canEdit)
         confirmationText = "😍 Your message was sent to the channel 💓💗"
         try:
             await self.bot.send_message(
