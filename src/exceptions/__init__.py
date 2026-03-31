@@ -22,6 +22,14 @@ from exceptions.channel import (
     ChannelPostError,
     ChannelPermissionError,
 )
+from exceptions.subscription import (
+    NotSubscribedError,
+)
+from exceptions.alias import (
+    AliasError,
+    AliasValidationError,
+    AliasTakenError,
+)
 
 __all__ = [
     # base
@@ -44,4 +52,10 @@ __all__ = [
     "ChannelAccessError",
     "ChannelPostError",
     "ChannelPermissionError",
+    # subscription
+    "NotSubscribedError",
+    # alias
+    "AliasError",
+    "AliasValidationError",
+    "AliasTakenError",
 ]

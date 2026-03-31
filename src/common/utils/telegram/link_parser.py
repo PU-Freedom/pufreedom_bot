@@ -1,30 +1,39 @@
 import re
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional, Union
 from aiogram.types import Message
+
+@dataclass
+class ParsedLink:
+    chatId: Union[int, str]
+    messageId: int
+    commentId: Optional[int] = None
 
 class TelegramLinkParser:
     PRIVATE_LINK_PATTERN = re.compile(
-        r"https?://t\.me/c/(\d+)/(\d+)"
+        r"https?://t\.me/c/(\d+)/(\d+)(?:\?comment=(\d+))?"
     )
-    
+
     PUBLIC_LINK_PATTERN = re.compile(
-        r"https?://t\.me/([a-zA-Z0-9_]+)/(\d+)"
+        r"https?://t\.me/([a-zA-Z0-9_]+)/(\d+)(?:\?comment=(\d+))?"
     )
-    
+
     @classmethod
-    def parseMessageLink(cls, link: str) -> Optional[Tuple[int, int]]:
+    def parseMessageLink(cls, link: str) -> Optional[ParsedLink]:
         match = cls.PRIVATE_LINK_PATTERN.search(link)
         if match:
-            chatId = int(match.group(1))
+            chatId = int(f"-100{match.group(1)}")
             messageId = int(match.group(2))
-            chatId = -1000000000000 - chatId
-            return (chatId, messageId)
-        
+            commentId = int(match.group(3)) if match.group(3) else None
+            return ParsedLink(chatId=chatId, messageId=messageId, commentId=commentId)
+
         match = cls.PUBLIC_LINK_PATTERN.search(link)
         if match:
             username = match.group(1)
             messageId = int(match.group(2))
-            return (username, messageId)
+            commentId = int(match.group(3)) if match.group(3) else None
+            return ParsedLink(chatId=username, messageId=messageId, commentId=commentId)    
+
         return None
     
     @classmethod
@@ -45,6 +54,11 @@ def getMessageLink(chatId: int, messageId: int) -> str:
     else:
         return f"https://t.me/c/{abs(chatId)}/{messageId}"
 
+def getMessageLink(chatId: int, messageId: Optional[int] = None) -> str:
+    strId = str(chatId)
+    linkId = strId[4:] if strId.startswith("-100") else strId.lstrip("-")
+    base = f"https://t.me/c/{linkId}"
+    return f"{base}/{messageId}" if messageId else base
 
 def formatUserMention(message: Message) -> str:
     user = message.from_user

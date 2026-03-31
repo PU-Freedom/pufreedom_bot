@@ -3,6 +3,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 from db import Base
 from config import settings, dbManager, redisManager
 from bot import (
@@ -11,6 +12,8 @@ from bot import (
     ErrorHandlerMiddleware,
     SessionMiddleware
 )
+from bot.handlers.settings import router as settingsRouter
+from bot.handlers.group import router as groupRouter
 from services import (
     RateLimiterService,
     NSFWChecker,
@@ -18,11 +21,20 @@ from services import (
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper()),
-    format='%(asctime)s :: %(name)s :: %(levelname)s -- %(message)s'
+    format='%(asctime)s :: %(name)s :: [%(levelname)s] -- %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 sep = '='*7
+
+async def setCommands(bot: Bot):
+    commands = [
+        BotCommand(command="start", description="Start the bot"),
+        BotCommand(command="settings", description="Manage your settings"),
+        BotCommand(command="anon", description="Leave an anonymous comment"),
+    ]
+    await bot.set_my_commands(commands)
+    logger.info(f"{sep} BOT COMMANDS SET {sep}")
 
 async def createTables():
     async with dbManager.engine.begin() as conn:
@@ -41,6 +53,7 @@ async def main():
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
         dp = Dispatcher()
+        await setCommands(bot)
 
         # -- singletons :: created once - live on dp - available to all handlers
         dp["nsfwChecker"] = NSFWChecker()
@@ -55,6 +68,8 @@ async def main():
         dp.message.middleware(ErrorHandlerMiddleware())
         dp.callback_query.middleware(ErrorHandlerMiddleware())
 
+        dp.include_router(settingsRouter)
+        dp.include_router(groupRouter)
         dp.include_router(private.router)
         dp.include_router(callback.router)
         logger.info(f"{sep} BOT STARTED {sep}")

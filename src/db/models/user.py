@@ -28,6 +28,13 @@ class User(Base, IdMixin, TimestampMixin):
         nullable=True
     )
     
+    alias: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        unique=True,
+        index=True
+    )
+
     isBanned: Mapped[bool] = mapped_column(
         Boolean,
         default=False,

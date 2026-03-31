@@ -2,11 +2,17 @@ from typing import Callable, Dict, Any, Awaitable
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 from config import dbManager
-from db import UserRepository, MessageMappingRepository
+from db import (
+    UserRepository, 
+    MessageMappingRepository, 
+    CommentMappingRepository, 
+    ChannelThreadMappingRepository
+)
 from services import (
     MessageForwarderService,
     ReplyResolverService,
-    EditService
+    EditService,
+    AnonCommentService,
 )
 
 class SessionMiddleware(BaseMiddleware):
@@ -35,6 +41,8 @@ class SessionMiddleware(BaseMiddleware):
 
             userRepo = UserRepository(session)
             messageMappingRepo = MessageMappingRepository(session)
+            commentMappingRepo = CommentMappingRepository(session)
+            channelThreadRepo = ChannelThreadMappingRepository(session)
             replyResolver = ReplyResolverService(bot, messageMappingRepo)
             editService = EditService(bot, redis, messageMappingRepo)
             messageForwarder = MessageForwarderService(
@@ -46,11 +54,21 @@ class SessionMiddleware(BaseMiddleware):
                 nsfwChecker,
                 redis
             )
+            anonCommentService = AnonCommentService(
+                bot,
+                userRepo,
+                commentMappingRepo,
+                channelThreadRepo,
+            )
+            data["session"] = session
             data["userRepo"] = userRepo
             data["editService"] = editService
             data["replyResolver"] = replyResolver
             data["messageForwarder"] = messageForwarder
             data["mediaGroupHandler"] = messageForwarder.mediaGroupHandler
             data["messageMappingRepo"] = messageMappingRepo
+            data["commentMappingRepo"] = commentMappingRepo
+            data["channelThreadRepo"] = channelThreadRepo
+            data["anonCommentService"] = anonCommentService
             return await handler(event, data)
         

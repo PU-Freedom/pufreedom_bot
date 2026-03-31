@@ -1,10 +1,10 @@
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums import ChatType
-from aiogram.filters import CommandStart
-from common import checkUserNotBanned, handleMessageErrors
-from services import MessageForwarderService, EditService
-from exceptions import BotException, RateLimitExceeded
+from aiogram.filters import CommandStart, Command
+from common import checkUserNotBanned, handleMessageErrors, settings
+from services import MessageForwarderService, EditService, AnonCommentService
+from exceptions import BotException, RateLimitExceeded, NotSubscribedError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,26 +12,28 @@ router = Router(name="private")
 
 @router.message(CommandStart())
 @handleMessageErrors("Failed to send welcome message")
-async def cmdStart(message: Message):
+async def cmdStart(message: Message, channelChatId: str = settings.CHANNEL_USERNAME):
     await message.answer(
-        "<b>🧃 Welcome to PU Freedom 🆓🏡</b>\n\n"
+        f'<b>🧃 Welcome to <a href="t.me/{channelChatId}">PU Freedom 🆓🏡</a></b>\n\n'
         "<b>🐊 I mean.. you know what to do 😋🍽</b>\n\n"
-        "<b>🎥 Images and Videos are supported 👶🏿</b>\n"
-        "<b>If its something crazy</b>" 
-        "<b>--- you can always go E⬛️S⬛️T⬛️I⬛️ M⬛️D⬛️</b>\n\n"
-        "<b>We provide exclusive feature to REDACT your media contents with spoiler😉</b>\n"
+        "<b>🎥 All content types are supported 👶🏿</b>\n\n"
+        "<b><i>Posting something crazy😛👅?</i> Use the Spoiler Overlay to R⬛️D⬛️CT your media.</b>\n"
+        "<b>🥹 We dont censor, but we do suggest keeping it clean for the scrolls (but its still up to you).</b>"
     )
+
+@router.message(F.chat.type == ChatType.PRIVATE, Command("anon"))
+async def handleAnon(message: Message, anonCommentService: AnonCommentService):
+    await anonCommentService.handle(message)
 
 @router.message(
     F.chat.type == ChatType.PRIVATE,
     F.content_type.in_({
-        "text", 
-        "photo", 
-        "video", 
-        "animation", 
-        "document", 
-        "poll", 
-        "sticker"
+        "text",
+        "photo", "video", "animation", "document", "audio", "voice",
+        "poll", "sticker", "dice", "game",
+        "location", "venue", "contact",
+        "video_note",
+        "story"
     })
 )
 @checkUserNotBanned
@@ -51,6 +53,9 @@ async def handleMessage(
             f"rate limit exceeded for user {message.from_user.id}: "
             f"{e.currentMessageCount}/{e.limit}"
         )
+    except NotSubscribedError as e:
+        await message.reply(e.userMessage)
+        logger.warning(f"unsubscribed user {message.from_user.id} blocked (status={e.status})")
     except BotException as e:
         await message.reply(e.userMessage)
         logger.error(f"bot exception: {e.message}", exc_info=True)
@@ -62,13 +67,7 @@ async def handleMessage(
 @handleMessageErrors("Failed to send unsupported type message")
 async def handleUnsupported(message: Message):
     await message.reply(
-        "This message type is not supported cuh\n\n"
-        "Supported types:\n"
-        "• text messages\n"
-        "• photos\n"
-        "• videos\n"
-        "• animations (gifs)\n"
-        "• documents\n"
-        "• polls\n"
-        "• stickers"
+        "This message type is not supported\n\n"
+        "Now why the FUCK it is NOT supported? DM admin, call him slurs, this bitch cant even setup full content support properly\n"
+        "Admin shuold lowk off himself"
     )
