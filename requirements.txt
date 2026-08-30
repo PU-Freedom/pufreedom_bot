@@ -8,4 +8,3 @@ pydantic==2.10.4
 pydantic-settings==2.7.0
 python-dotenv==1.0.1
 python-dateutil==2.9.0
-nudenet==3.4.2

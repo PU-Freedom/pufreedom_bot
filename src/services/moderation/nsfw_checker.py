@@ -2,7 +2,6 @@ import logging
 from typing import Optional, Tuple
 from aiogram import Bot
 from aiogram.types import Message, PhotoSize
-from nudenet import NudeDetector
 from config import settings
 import os
 import tempfile
@@ -24,6 +23,13 @@ class NSFWChecker:
     def _lazyInit(self):
         if not self._initialized:
             logger.info("initting nsfw detector...")
+            try:
+                from nudenet import NudeDetector
+            except ImportError as exc:
+                raise RuntimeError(
+                    "nudenet is not installed. Set ENFORCED_NSFW_CHECK=false "
+                    "to use manual nsfw prompts, or use the nsfw enabled image."
+                ) from exc
             self.detector = NudeDetector()
             self._initialized = True
             logger.info("nsfw detector ready")
