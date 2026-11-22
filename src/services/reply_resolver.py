@@ -107,7 +107,8 @@ class ReplyResolverService:
     ) -> Optional[ReplyParameters]:
         mapping = await self.messageMappingRepo.getByUserMessageOrLastEditMessage(
             userChatId=replyToMessage.chat.id,
-            userMessageId=replyToMessage.message_id
+            userMessageId=replyToMessage.message_id,
+            channelChatId=targetChatId,
         )
         if mapping:
             quoteText = originalMessage.quote.text if originalMessage.quote else None

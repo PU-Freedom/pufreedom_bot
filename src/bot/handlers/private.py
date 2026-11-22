@@ -2,7 +2,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums import ChatType
 from aiogram.filters import CommandStart, Command
-from common import checkUserNotBanned, handleMessageErrors, settings
+from common import checkUserNotBanned, handleMessageErrors, settings, SUPPORTED_CONTENT_TYPES
 from services import MessageForwarderService, EditService, AnonCommentService
 from exceptions import BotException, RateLimitExceeded, NotSubscribedError
 from db import UserRepository
@@ -28,14 +28,7 @@ async def handleAnon(message: Message, anonCommentService: AnonCommentService):
 
 @router.message(
     F.chat.type == ChatType.PRIVATE,
-    F.content_type.in_({
-        "text",
-        "photo", "video", "animation", "document", "audio", "voice",
-        "poll", "sticker", "dice", "game",
-        "location", "venue", "contact",
-        "video_note",
-        "story"
-    })
+    F.content_type.in_(SUPPORTED_CONTENT_TYPES)
 )
 @checkUserNotBanned
 async def handleMessage(

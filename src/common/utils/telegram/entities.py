@@ -33,6 +33,15 @@ def cutRange(text: str, entities: Entities, start: int, end: int) -> Tuple[str, 
             newEntities.append(entity.model_copy(update={"offset": newStart, "length": newEnd - newStart}))
     return text[:start] + text[end:], newEntities or None
 
+def joinText(*parts: Tuple[str, Entities]) -> Tuple[str, Entities]:
+    text, joined, offset = "", [], 0
+    for partText, partEntities in parts:
+        for entity in partEntities or []:
+            joined.append(entity.model_copy(update={"offset": entity.offset + offset}))
+        text += partText
+        offset += utf16Len(partText)
+    return text, joined or None
+
 def stripText(text: str, entities: Entities) -> Tuple[str, Entities]:
     trailing = len(text) - len(text.rstrip())
     if trailing:

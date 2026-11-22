@@ -1,8 +1,6 @@
-from typing import Optional, NamedTuple
-from aiogram.types import Message
+from typing import NamedTuple
 
 class SendResult(NamedTuple):
     messageId: int
     chatId: int
-    sentMessage: Optional[Message]
     canEdit: bool

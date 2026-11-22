@@ -17,22 +17,6 @@ class MessageMappingRepository(BaseRepository[MessageMapping]):
     def __init__(self, session: AsyncSession):
         super().__init__(MessageMapping, session)
     
-    async def getByUserMessage(
-        self,
-        userChatId: int,
-        userMessageId: int
-    ) -> Optional[MessageMapping]:
-        result = await self.session.execute(
-            select(MessageMapping).where(
-                and_(
-                    MessageMapping.userChatId == userChatId,
-                    MessageMapping.userMessageId == userMessageId,
-                    MessageMapping.isDeleted == False
-                )
-            )
-        )
-        return result.scalar_one_or_none()
-    
     async def getByChannelMessage(
         self,
         channelChatId: int,
@@ -54,19 +38,23 @@ class MessageMappingRepository(BaseRepository[MessageMapping]):
     async def getByUserMessageOrLastEditMessage(
         self,
         userChatId: int,
-        userMessageId: int
+        userMessageId: int,
+        channelChatId: int,
     ) -> Optional[MessageMapping]:
+        # user-side message ids are only unique per bot chat - a new bot token reuses them,
+        # so collisions are possible: newest mapping wins
         result = await self.session.execute(
             select(MessageMapping).where(
                 and_(
                     MessageMapping.userChatId == userChatId,
+                    MessageMapping.channelChatId == channelChatId,
                     MessageMapping.isDeleted == False,
                     or_(
                         MessageMapping.userMessageId == userMessageId,
                         MessageMapping.userLastEditMessageId == userMessageId
                     )
                 )
-            )
+            ).order_by(MessageMapping.id.desc()).limit(1)
         )
         mapping = result.scalar_one_or_none()
         logger.info(f"[GET_MAPPING] found: {mapping is not None}")
@@ -118,15 +106,15 @@ class MessageMappingRepository(BaseRepository[MessageMapping]):
     
     async def updateLastEditMessageId(
         self,
-        userMessageId: int,
-        userChatId: int,
+        channelChatId: int,
+        channelMessageId: int,
         lastEditMessageId: int
     ) -> None:
         await self.session.execute(
             update(MessageMapping)
             .where(
-                MessageMapping.userMessageId == userMessageId,
-                MessageMapping.userChatId == userChatId
+                MessageMapping.channelChatId == channelChatId,
+                MessageMapping.channelMessageId == channelMessageId
             )
             .values(userLastEditMessageId=lastEditMessageId)
         )

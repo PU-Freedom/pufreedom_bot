@@ -2,10 +2,10 @@ import json
 import logging
 from aiogram import Bot
 from aiogram.types import Message, ReplyParameters
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from redis.asyncio import Redis
 from config import settings
-from common import isMediaMessage, buildMessageActionsKeyboard
+from common import isMediaMessage, buildMessageActionsKeyboard, hasCustomEmoji, CUSTOM_EMOJI_NOTE
 from db import MessageMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,16 @@ class EditService:
                 )
             return True
             
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e):
+                logger.error(f"failed to edit message: {e}")
+                await message.reply("failed to edit message. try again")
+                return True
+            text = "🤷 Nothing changed - the message already has this exact content. Send a different text."
+            if hasCustomEmoji(message):
+                text += f"\n\n{CUSTOM_EMOJI_NOTE}"
+            await message.reply(text)
+            return True
         except TelegramAPIError as e:
             logger.error(f"failed to edit message: {e}")
             await message.reply("failed to edit message. try again")
@@ -114,8 +124,8 @@ class EditService:
 
         if not isComment:
             await self.messageMappingRepo.updateLastEditMessageId(
-                userMessageId=editData["userMessageId"],
-                userChatId=message.from_user.id,
+                channelChatId=targetChatId,
+                channelMessageId=channelMessageId,
                 lastEditMessageId=message.message_id
             )
 

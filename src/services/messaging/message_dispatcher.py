@@ -1,167 +1,91 @@
 from typing import Optional
 from aiogram import Bot
-from aiogram.types import Message, ReplyParameters
+from aiogram.enums import ContentType
+from aiogram.types import Message, ReplyParameters, LinkPreviewOptions
 from aiogram.exceptions import TelegramAPIError
-from common import SendResult, MESSAGE_TYPE_CONFIGS, isSupportedType
+from common import SendResult, TextContent, originalText, isSupportedType, canEditType
 from exceptions import ChannelPostError
 import logging
 
 logger = logging.getLogger(__name__)
 
+SPOILER_MEDIA_FIELDS = {
+    ContentType.PHOTO: "photo",
+    ContentType.VIDEO: "video",
+    ContentType.ANIMATION: "animation",
+}
+
 class MessageDispatcher:
-    def __init__(self, bot: Bot, channelChatId: int):
+    """
+    sends a user's message into a chat, keeping formatting as native entities:
+    - default: copy_message (new caption + entities if changed)
+    - text message with changed text: send_message (copy can't replace text)
+    - forced spoiler the user didn't set: send_photo/video/animation (copy has no has_spoiler)
+    """
+    def __init__(self, bot: Bot, chatId: int):
         self.bot = bot
-        self.channelChatId = channelChatId
-        logger.info(f"[DISPATCHER] initted for channel {channelChatId}")
-    
+        self.chatId = chatId
+
     async def send(
         self,
         message: Message,
         replyParams: Optional[ReplyParameters] = None,
-        hasSpoiler: bool = False,
-        overrideCaption: Optional[str] = None,
-        threadId: Optional[int] = None,
+        newText: Optional[TextContent] = None,
+        forceSpoiler: bool = False,
         replyMarkup=None,
     ) -> SendResult:
-        """
-        send message to the channel based on its content type
-        process:
-        - look up message type config
-        - build params using param builder for given content type
-        - calls appropriate tg api method
-        - return SendResult dto with message details
-        """
         contentType = message.content_type
         if not isSupportedType(contentType):
-            logger.error(f"[DISPATCHER] == X == unsupported content type: {contentType}")
             raise ChannelPostError(f"Unsupported message type: {contentType}")
-        
-        config = MESSAGE_TYPE_CONFIGS[contentType]
-        # "" = send without caption, so it must not take the verbatim copy path
-        if not hasSpoiler and overrideCaption is None and not replyMarkup and not message.forward_origin:
-            try:
-                copyParams = {
-                    "chat_id": self.channelChatId,
-                    "from_chat_id": message.chat.id,
-                    "message_id": message.message_id,
-                }
-                if replyParams:
-                    copyParams["reply_parameters"] = replyParams
-                if threadId:
-                    copyParams["message_thread_id"] = threadId
-                result = await self.bot.copy_message(**copyParams)
-                logger.info(f"[DISPATCHER] successfully sent {contentType.name} (method: copy_message)")
-                return SendResult(
-                    messageId=result.message_id,
-                    chatId=self.channelChatId,
-                    sentMessage=None,
-                    canEdit=config.canEdit,
-                )
-            except TelegramAPIError as e:
-                logger.warning(
-                    f"[DISPATCHER] copy_message failed for {contentType.name} ({e}), "
-                    f"falling back to {config.sendMethod}"
-                )
 
-        logger.debug(f"[DISPATCHER] Sending {contentType.name} via {config.sendMethod}")
-        params = config.paramBuilder(
-            message,
-            self.channelChatId,
-            replyParams,
-            hasSpoiler=hasSpoiler,
-            overrideCaption=overrideCaption
-        )
-        if threadId:
-            params["message_thread_id"] = threadId
-
-        if replyMarkup and "from_chat_id" not in params:
+        method, params = self._build(message, newText, forceSpoiler)
+        params["chat_id"] = self.chatId
+        params["parse_mode"] = None
+        if replyMarkup:
             params["reply_markup"] = replyMarkup
-        if "text" in params and "from_chat_id" not in params:
-            logger.info(f"[DISPATCHER] text override detected - using send_message")
-            sendMethod = self.bot.send_message
-        else:
-            sendMethod = getattr(self.bot, config.sendMethod)
-        logger.debug(
-            f"[DISPATCHER] Params for {contentType.name}: "
-            f"{list(params.keys())}"
-        )
-        return await self._callSendMethod(sendMethod, params, replyParams, contentType, config)
+        if replyParams:
+            params["reply_parameters"] = replyParams
 
-    async def _callSendMethod(self, sendMethod, params, replyParams, contentType, config) -> SendResult:
-        """extracted err handling logic to make it less nested and ugly"""
         try:
-            result = await sendMethod(**params)
-            logger.info(
-                f"[DISPATCHER] successfully sent {contentType.name} "
-                f"(method: {config.sendMethod})"
-            )
-            return self._buildSendResult(result, config)
-
+            result = await method(**params)
         except TelegramAPIError as e:
-            if replyParams and "reply_parameters" in params:
-                logger.warning(
-                    f"[DISPATCHER] {config.sendMethod} failed with reply params ({e}), "
-                    f"retrying without reply params"
-                )
-                params.pop("reply_parameters")
-                try:
-                    result = await sendMethod(**params)
-                    logger.info(
-                        f"[DISPATCHER] successfully sent {contentType.name} "
-                        f"without reply params (method: {config.sendMethod})"
-                    )
-                    return self._buildSendResult(result, config)
-                except TelegramAPIError as retryErr:
-                    logger.error(
-                        f"[DISPATCHER] == X == retry without reply params also failed for "
-                        f"{contentType.name}: {retryErr}",
-                        exc_info=True
-                    )
-                    raise ChannelPostError(
-                        f"Telegram API error sending {contentType.name}: {retryErr}"
-                    ) from retryErr
-            logger.error(
-                f"[DISPATCHER] == X == Telegram API error sending {contentType.name} "
-                f"via {config.sendMethod}: {e}",
-                exc_info=True
-            )
-            raise ChannelPostError(
-                f"Telegram API error sending {contentType.name}: {e}"
-            ) from e
-        except AttributeError as e:
-            logger.error(
-                f"[DISPATCHER] == X == Configuration error for {contentType.name}: {e} "
-                f"(method: {config.sendMethod})",
-                exc_info=True
-            )
-            raise ChannelPostError(
-                f"Invalid configuration for {contentType.name}: {e}"
-            ) from e
-        except TypeError as e:
-            logger.error(
-                f"[DISPATCHER] == X == parameter error for {contentType.name}: {e} "
-                f"(method: {config.sendMethod}, params: {list(params.keys())})",
-                exc_info=True
-            )
-            raise ChannelPostError(
-                f"Parameter error sending {contentType.name}: {e}"
-            ) from e
-        except Exception as e:
-            logger.error(
-                f"[DISPATCHER] == X == unexpected error sending {contentType.name}: {e}",
-                exc_info=True
-            )
-            raise ChannelPostError(
-                f"Unexpected error sending {contentType.name}: {e}"
-            ) from e
+            if "reply_parameters" not in params:
+                raise ChannelPostError(f"Telegram API error sending {contentType}: {e}") from e
+            logger.warning(f"[DISPATCHER] send failed with reply params ({e}), retrying without")
+            params.pop("reply_parameters")
+            try:
+                result = await method(**params)
+            except TelegramAPIError as retryErr:
+                raise ChannelPostError(f"Telegram API error sending {contentType}: {retryErr}") from retryErr
 
-    def _buildSendResult(self, result, config) -> SendResult:
-        # NOTE: copy_message returns MessageId obj, others return Message
-        messageId = result.message_id if hasattr(result, 'message_id') else result
-        sentMessage = result if hasattr(result, 'message_id') else None
-        return SendResult(
-            messageId=messageId,
-            chatId=self.channelChatId,
-            sentMessage=sentMessage,
-            canEdit=config.canEdit
-        )
+        logger.info(f"[DISPATCHER] sent {contentType} to {self.chatId} via {method.__name__}")
+        return SendResult(messageId=result.message_id, chatId=self.chatId, canEdit=canEditType(contentType))
+
+    def _build(self, message: Message, newText: Optional[TextContent], forceSpoiler: bool):
+        contentType = message.content_type
+        field = SPOILER_MEDIA_FIELDS.get(contentType)
+        if forceSpoiler and field and not message.has_media_spoiler:
+            caption = newText if newText is not None else originalText(message)
+            media = message.photo[-1] if field == "photo" else getattr(message, field)
+            return getattr(self.bot, f"send_{field}"), {
+                field: media.file_id,
+                "has_spoiler": True,
+                "caption": caption.text or None,
+                "caption_entities": caption.entities,
+                "show_caption_above_media": message.show_caption_above_media,
+            }
+
+        if contentType == ContentType.TEXT and newText is not None and newText.text:
+            previewOff = message.link_preview_options and message.link_preview_options.is_disabled
+            return self.bot.send_message, {
+                "text": newText.text,
+                "entities": newText.entities,
+                "link_preview_options": LinkPreviewOptions(is_disabled=True) if previewOff else None,
+            }
+
+        params = {"from_chat_id": message.chat.id, "message_id": message.message_id}
+        if newText is not None and contentType != ContentType.TEXT:
+            params["caption"] = newText.text
+            params["caption_entities"] = newText.entities
+            params["show_caption_above_media"] = message.show_caption_above_media
+        return self.bot.copy_message, params

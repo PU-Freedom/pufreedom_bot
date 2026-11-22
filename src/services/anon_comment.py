@@ -17,10 +17,9 @@ from common import (
     classifyOwnLink,
     cutRange,
     stripText,
-    entitiesToHtml,
+    TextContent,
     buildCommentActionsKeyboard,
-    MESSAGE_TYPE_CONFIGS,
-    isSupportedType,
+    canEditType,
     getMessageLink
 )
 from exceptions import RateLimitExceeded, NotSubscribedError
@@ -50,8 +49,7 @@ FOREIGN_LINK_TEXT = "❌ That link is not a post or comment from our channel."
 @dataclass
 class AnonArgs:
     parsedLink: Optional[ParsedLink]
-    commentHtml: Optional[str]
-    commentPlain: Optional[str]
+    comment: TextContent
     hasNativeReply: bool
 
 class AnonCommentService:
@@ -133,15 +131,12 @@ class AnonCommentService:
             await self._deleteQuietly(message)
 
         try:
-            canEdit = (
-                isSupportedType(message.content_type)
-                and MESSAGE_TYPE_CONFIGS[message.content_type].canEdit
-            )
+            canEdit = canEditType(message.content_type)
             keyboard = buildCommentActionsKeyboard(canEdit=canEdit)
             result = await self.groupDispatcher.send(
                 message,
                 replyParams=replyParams,
-                overrideCaption=args.commentHtml if args.commentHtml is not None else ("" if message.caption else None),
+                newText=args.comment,
                 replyMarkup=keyboard,
             )
 
@@ -156,7 +151,7 @@ class AnonCommentService:
             logger.info(f"[ANON] comment posted: groupMessageId={result.messageId}, threadId={threadId}")
 
             if replyToMessageId:
-                await self._notifyRepliedAnonAuthor(replyToMessageId, result.messageId, args.commentPlain)
+                await self._notifyRepliedAnonAuthor(replyToMessageId, result.messageId, args.comment.text)
 
             if not isInGroup:
                 confirmKeyboard = buildCommentActionsKeyboard(
@@ -213,8 +208,7 @@ class AnonCommentService:
             return None
         return AnonArgs(
             parsedLink=parsedLink,
-            commentHtml=entitiesToHtml(commentText, commentEntities) if commentText else None,
-            commentPlain=commentText or None,
+            comment=TextContent(commentText, commentEntities),
             hasNativeReply=message.reply_to_message is not None,
         )
 

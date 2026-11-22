@@ -18,12 +18,3 @@ class CommentMappingRepository(BaseRepository[CommentMapping]):
             )
         )
         return result.scalar_one_or_none()
-
-    async def getByUserMessage(self, userChatId: int, userMessageId: int) -> Optional[CommentMapping]:
-        result = await self.session.execute(
-            select(CommentMapping).where(
-                CommentMapping.userChatId == userChatId,
-                CommentMapping.userMessageId == userMessageId
-            )
-        )
-        return result.scalar_one_or_none()

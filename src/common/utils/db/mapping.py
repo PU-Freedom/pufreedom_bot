@@ -1,4 +1,3 @@
-from typing import Optional
 import logging
 from db import MessageMappingRepository, MessageMapping
 
@@ -27,29 +26,3 @@ class MappingUtil:
             f"channelChatId={channelChatId}, channelMessageId={channelMessageId}"
         )
         return mapping
-    
-    @staticmethod
-    async def findReplyMapping(
-        repo: MessageMappingRepository,
-        userChatId: int,
-        userMessageId: int,
-        context: str = "MAPPING"
-    ) -> Optional[MessageMapping]:
-        mapping = await repo.getByUserMessage(
-            userChatId=userChatId,
-            userMessageId=userMessageId
-        )
-        if mapping:
-            logger.info(
-                f"[{context}] == OK == found mapping: "
-                f"userMessage={userMessageId} -> "
-                f"channelMessage={mapping.channelMessageId}, "
-                f"channelChat={mapping.channelChatId}"
-            )
-        else:
-            logger.warning(
-                f"[{context}] == X == NO mapping found for "
-                f"userMessage={userMessageId} in chat={userChatId}"
-            )
-        return mapping
-    

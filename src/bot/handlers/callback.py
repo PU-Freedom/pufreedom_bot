@@ -189,33 +189,19 @@ async def handleEditRequest(
 @handleCallbackErrors("Failed to process your decision")
 async def handleNSFWSafe(
     callback: CallbackQuery,
-    bot: Bot,
     messageForwarder: MessageForwarderService,
     mediaGroupHandler: MediaGroupHandler
 ):
-    await _handleNSFWDecision(
-        callback, 
-        bot, 
-        messageForwarder, 
-        mediaGroupHandler, 
-        hasSpoiler=False
-    )
+    await _handleNSFWDecision(callback, messageForwarder, mediaGroupHandler, hasSpoiler=False)
 
 @router.callback_query(F.data.startswith("nsfw_mark:"))
 @handleCallbackErrors("Failed to process your decision")
 async def handleNSFWMark(
     callback: CallbackQuery,
-    bot: Bot,
     messageForwarder: MessageForwarderService,
     mediaGroupHandler: MediaGroupHandler
 ):
-    await _handleNSFWDecision(
-        callback, 
-        bot, 
-        messageForwarder, 
-        mediaGroupHandler, 
-        hasSpoiler=True
-    )
+    await _handleNSFWDecision(callback, messageForwarder, mediaGroupHandler, hasSpoiler=True)
 
 @router.callback_query(F.data.startswith("nsfw_cancel:"))
 @handleCallbackErrors("Failed to cancel")
@@ -231,7 +217,6 @@ async def handleNSFWCancel(
 
 async def _handleNSFWDecision(
     callback: CallbackQuery,
-    bot: Bot,
     messageForwarder: MessageForwarderService,
     mediaGroupHandler: MediaGroupHandler,
     hasSpoiler: bool
@@ -240,59 +225,18 @@ async def _handleNSFWDecision(
     chatId = callback.message.chat.id
     nsfwDataManager = NSFWDataManager(messageForwarder.redis)
 
-    singleMediaData = await nsfwDataManager.claimSingleMedia(chatId, messageId)
-    if singleMediaData:
-        try:
-            originalMessage = await _fetchAndDeleteForwardedMessage(
-                bot, callback.from_user.id, singleMediaData['messageChatId'], singleMediaData['messageId']
-            )
-            user = await messageForwarder.userRepo.getById(singleMediaData['userId'])
-            await messageForwarder._sendToChannel(
-                originalMessage,
-                user,
-                hasSpoiler=hasSpoiler,
-                addWarning=False,
-                forceReplyToMessageId=singleMediaData.get('replyToMessageId'),
-                forceReplyToChatId=singleMediaData.get('replyToChatId'),
-                originalUserMessageId=singleMediaData['messageId'],
-                forceQuoteText=singleMediaData.get('quoteText'),
-                stripReplyLink=singleMediaData.get('stripReplyLink', False),
-            )
-        except Exception:
-            await nsfwDataManager.restoreSingleMedia(chatId, messageId, singleMediaData)
-            raise
-        await callback.message.delete()
-        await callback.answer()
-        return
-
-    mediaGroupData = await nsfwDataManager.claimMediaGroup(chatId, messageId)
-    if not mediaGroupData:
+    pending = await nsfwDataManager.claim(chatId, messageId)
+    if not pending:
         await callback.answer("❌ Request expired", show_alert=True)
         return
-
-    messageIds = [
-        {
-            'messageId': groupMessageId,
-            'chatId': mediaGroupData['chatId'],
-            'userId': mediaGroupData['userId']
-        }
-        for groupMessageId in mediaGroupData['messageIds']
-    ]
     try:
-        user = await messageForwarder.userRepo.getById(mediaGroupData['userId'])
-        await mediaGroupHandler.sendToChannel(
-            messageIds,
-            user,
-            mediaGroupData['chatId'],
-            hasSpoiler=hasSpoiler,
-            addWarning=False,
-            forceReplyToMessageId=mediaGroupData.get('replyToMessageId'),
-            forceReplyToChatId=mediaGroupData.get('replyToChatId'),
-            forceQuoteText=mediaGroupData.get('quoteText'),
-            alias=user.alias
-        )
+        user = await messageForwarder.userRepo.getById(pending.userId)
+        if pending.messages[0].media_group_id:
+            await mediaGroupHandler.sendToChannel(pending.messages, user, hasSpoiler=hasSpoiler)
+        else:
+            await messageForwarder._sendToChannel(pending.messages[0], user, hasSpoiler=hasSpoiler)
     except Exception:
-        await nsfwDataManager.restoreMediaGroup(chatId, messageId, mediaGroupData)
+        await nsfwDataManager.restore(chatId, messageId, pending)
         raise
     await callback.message.delete()
     await callback.answer()
