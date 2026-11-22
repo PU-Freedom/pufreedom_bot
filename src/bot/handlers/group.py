@@ -8,6 +8,7 @@ from db import (
 from common import buildAliasKeyboard, getMessageLink
 from config import settings
 from redis.asyncio import Redis
+import html
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ router = Router(name="group")
 
 @router.message(
     F.chat.id == settings.DISCUSSION_GROUP_ID,
+    F.is_automatic_forward,  # manual forwards by members must not repoint a post's thread
     F.forward_origin.type == "channel",
     F.forward_origin.chat.id == settings.CHANNEL_ID,
 )
@@ -91,7 +93,7 @@ async def handleReplyToComment(
     messageParts = [f'<i><b>💬 Someone replied to <a href="{commentLink}">your anonymous comment</a></b></i>']
     if replyText:
         preview = (replyText[:200] + "...") if len(replyText) > 200 else replyText
-        messageParts.append(f"\n<b>📝 Preview:</b>\n<blockquote>{preview}</blockquote>")
+        messageParts.append(f"\n<b>📝 Preview:</b>\n<blockquote>{html.escape(preview)}</blockquote>")
     messageParts.append(f'\n<b><a href="{replyLink}">View reply</a></b>')
     notificationText = "\n".join(messageParts)
     try:

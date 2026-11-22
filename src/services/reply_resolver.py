@@ -1,8 +1,14 @@
-from typing import Optional
+from typing import Optional, Tuple
 from aiogram import Bot
 from aiogram.types import Message, ReplyParameters
 from db import MessageMappingRepository
-from common import TelegramLinkParser, ReplyParametersBuilder
+from common import (
+    TelegramLinkParser,
+    ReplyParametersBuilder,
+    LinkMatch,
+    ParsedLink,
+    classifyOwnLink,
+)
 from config import settings
 import logging
 
@@ -16,72 +22,75 @@ class ReplyResolverService:
     ):
         self.bot = bot
         self.messageMappingRepo = messageMappingRepo
-    
+
+    def _ownChatIds(self) -> set:
+        ids = {settings.CHANNEL_ID}
+        if settings.DISCUSSION_GROUP_ID:
+            ids.add(settings.DISCUSSION_GROUP_ID)
+        return ids
+
     async def resolve(
         self,
         message: Message,
         targetChatId: int
     ) -> Optional[ReplyParameters]:
-        logger.info(f"[RESOLVE] starting resolution for message {message.message_id}")
-        logger.info(f"[RESOLVE] has externalReply: {message.external_reply is not None}")
-        logger.info(f"[RESOLVE] has replyToMessage: {message.reply_to_message is not None}")
-        
+        replyParams, _ = await self.resolveWithLink(message, targetChatId)
+        return replyParams
+
+    async def resolveWithLink(
+        self,
+        message: Message,
+        targetChatId: int
+    ) -> Tuple[Optional[ReplyParameters], Optional[LinkMatch]]:
+        """consumedLink is set only when the reply target came from a link in the text"""
+        logger.info(
+            f"[RESOLVE] message {message.message_id}: "
+            f"externalReply={message.external_reply is not None}, "
+            f"replyTo={message.reply_to_message is not None}"
+        )
         if message.external_reply:
-            logger.info(f"[RESOLVE] resolving external reply | messageId - {message.message_id}")
             result = self._resolveExternal(message)
-            logger.info(f"[RESOLVE] external reply RESOLVED: messageId={result.message_id if result else None}, chatId={result.chat_id if result else None}")
-            return result
+            logger.info(f"[RESOLVE] external reply -> {self._fmt(result)}")
+            return result, None
 
         if message.reply_to_message:
-            logger.info(
-                f"[RESOLVE] resolving direct reply for message {message.message_id} "
-                f"-> replyToMessageId {message.reply_to_message.message_id}"
-            )
             result = await self._resolveDirect(message, message.reply_to_message, targetChatId)
-            if result:
-                logger.info(
-                    f"[RESOLVE] == OK == DIRECT reply resolved: messageId={result.message_id}, "
-                    f"chatId={result.chat_id}"
-                )
-            else:
-                logger.warning(f"[RESOLVE] == X == direct reply NOT resolved - no mapping found)")
-            return result
+            logger.info(f"[RESOLVE] direct reply -> {self._fmt(result)}")
+            return result, None
 
+        return await self.findOwnLink(message)
+
+    async def findOwnLink(self, message: Message) -> Tuple[Optional[ReplyParameters], Optional[LinkMatch]]:
         text = message.text or message.caption
-        if not text:
-            logger.info(f"[RESOLVE] no reply found for message {message.message_id}")
-            return None
-            
-        link = TelegramLinkParser.extractLinkFromText(text)
-        if link:
-            logger.info(f"[RESOLVE] found link in text: {link}")
-            return await self._resolveLink(link)
+        entities = message.entities if message.text else message.caption_entities
+        for linkMatch in TelegramLinkParser.findLinks(text, entities):
+            replyParams = await self._paramsForLink(linkMatch.parsed)
+            if replyParams:
+                logger.info(f"[RESOLVE] link {linkMatch.url} -> {self._fmt(replyParams)}")
+                return replyParams, linkMatch
+            logger.info(f"[RESOLVE] link {linkMatch.url} is not ours - leaving it in the text")
+        return None, None
 
-        logger.info(f"[RESOLVE] no reply found for message {message.message_id}")
-        return None
+    @staticmethod
+    def _fmt(replyParams: Optional[ReplyParameters]) -> str:
+        if not replyParams:
+            return "none"
+        return f"messageId={replyParams.message_id}, chatId={replyParams.chat_id}"
 
     def _resolveExternal(self, message: Message) -> Optional[ReplyParameters]:
         externalReply = message.external_reply
         chatId = None
         if externalReply.chat:
             chatId = externalReply.chat.id
-        elif hasattr(externalReply, 'origin') and externalReply.origin:
-            if hasattr(externalReply.origin, 'chat') and externalReply.origin.chat:
-                chatId = externalReply.origin.chat.id
+        elif getattr(externalReply, 'origin', None) and getattr(externalReply.origin, 'chat', None):
+            chatId = externalReply.origin.chat.id
         if not chatId:
             logger.info("[EXTERNAL] no chatId - skipping reply context")
             return None
 
-        validOrigins = {settings.CHANNEL_ID}
-        if settings.DISCUSSION_GROUP_ID:
-            validOrigins.add(settings.DISCUSSION_GROUP_ID)
-
-        if chatId not in validOrigins:
-            logger.info(
-                f"[EXTERNAL] reply to chat {chatId} - skipping, not channel or discussion group"
-            )
+        if chatId not in self._ownChatIds():
+            logger.info(f"[EXTERNAL] reply to chat {chatId} - skipping, not channel or discussion group")
             return None
-        logger.info(f"[EXTERNAL] reply to our channel/group (chatId={chatId}) - creating params")
         quoteText = message.quote.text if message.quote else None
         return ReplyParametersBuilder.build(
             messageId=externalReply.message_id,
@@ -91,73 +100,43 @@ class ReplyResolverService:
         )
 
     async def _resolveDirect(
-        self, 
+        self,
         originalMessage: Message,
-        replyToMessage: Message, 
+        replyToMessage: Message,
         targetChatId: int
     ) -> Optional[ReplyParameters]:
-        logger.info(
-            f"[DIRECT] trying mapping for user message: "
-            f"chatId={replyToMessage.chat.id}, messageId={replyToMessage.message_id}"
-        )
         mapping = await self.messageMappingRepo.getByUserMessageOrLastEditMessage(
             userChatId=replyToMessage.chat.id,
             userMessageId=replyToMessage.message_id
         )
         if mapping:
-            logger.info(
-                f"[DIRECT] == OK == mapping found; channel message info: "
-                f"chatId={mapping.channelChatId}, messageId={mapping.channelMessageId}"
-            )
             quoteText = originalMessage.quote.text if originalMessage.quote else None
             return ReplyParametersBuilder.buildFromMapping(
                 mapping,
                 quoteText=quoteText,
                 source="DIRECT"
             )
-        else:
-            logger.warning(
-                f"[DIRECT] == X == NO MAPPING FOUND for user message "
-                f"replyToMessageMessageId={replyToMessage.message_id} | replyTochatId={replyToMessage.chat.id}"
-            )
-        
-        if replyToMessage.forward_origin and hasattr(replyToMessage.forward_origin, 'chat'):
-            logger.info(f"[DIRECT] checking forward origin..")
-            origin = replyToMessage.forward_origin
+        logger.warning(
+            f"[DIRECT] no mapping for user message "
+            f"messageId={replyToMessage.message_id} | chatId={replyToMessage.chat.id}"
+        )
+
+        origin = replyToMessage.forward_origin
+        originChat = getattr(origin, 'chat', None) if origin else None
+        originMessageId = getattr(origin, 'message_id', None) if origin else None
+        if originChat and originMessageId and originChat.id in self._ownChatIds():
             return ReplyParametersBuilder.build(
-                messageId=getattr(origin, 'message_id'),
-                chatId=origin.chat.id,
+                messageId=originMessageId,
+                chatId=originChat.id,
                 source="DIRECT_FORWARD_ORIGIN"
             )
-        logger.info(f"[DIRECT] no forward origin either -> returning None")
         return None
 
-    async def _resolveLink(self, text: str) -> Optional[ReplyParameters]:
-        link = TelegramLinkParser.extractLinkFromText(text)
-        if link:
-            parsed = TelegramLinkParser.parseMessageLink(link)
-            if parsed:
-                chatId = parsed.chatId
-                if isinstance(chatId, str):
-                    try:
-                        chat = await self.bot.get_chat(f"@{chatId}")
-                        chatId = chat.id
-                        logger.info(f"[LINK] resolved username '{parsed.chatId}' to numeric ID {chat.id}")
-                    except Exception as e:
-                        logger.error(f"[LINK] failed to resolve username to chat ID: {e}")
-                        return None
-
-                if parsed.commentId and settings.DISCUSSION_GROUP_ID:
-                    logger.info(
-                        f"[LINK] comment link resolved: groupId={settings.DISCUSSION_GROUP_ID}, "
-                        f"commentId={parsed.commentId}"
-                    )
-                    return ReplyParameters(
-                        message_id=parsed.commentId,
-                        chat_id=settings.DISCUSSION_GROUP_ID
-                    )
-
-                logger.info(f"[LINK] resolved link: chatId={chatId}, messageId={parsed.messageId}")
-                return ReplyParameters(message_id=parsed.messageId, chat_id=chatId)
-        return None
-    
+    async def _paramsForLink(self, parsed: ParsedLink) -> Optional[ReplyParameters]:
+        own = await classifyOwnLink(self.bot, parsed)
+        if not own:
+            return None
+        kind, chatId = own
+        if kind == "channel" and parsed.commentId and settings.DISCUSSION_GROUP_ID:
+            return ReplyParameters(message_id=parsed.commentId, chat_id=settings.DISCUSSION_GROUP_ID)
+        return ReplyParameters(message_id=parsed.messageId, chat_id=chatId)

@@ -1,19 +1,29 @@
+import html
+from dataclasses import dataclass
 from typing import Optional, Tuple
 from aiogram import Bot
 from aiogram.types import Message, ReplyParameters
 from db import (
-    UserRepository, 
-    CommentMappingRepository, 
+    UserRepository,
+    CommentMappingRepository,
     ChannelThreadMappingRepository
 )
 from services.messaging import MessageDispatcher
+from services.rate_limiting import RateLimiterService
+from services.subscription_checker import SubscriptionCheckerService
 from common import (
-    TelegramLinkParser, 
-    buildCommentActionsKeyboard, 
-    MESSAGE_TYPE_CONFIGS, 
-    isSupportedType, 
+    TelegramLinkParser,
+    ParsedLink,
+    classifyOwnLink,
+    cutRange,
+    stripText,
+    entitiesToHtml,
+    buildCommentActionsKeyboard,
+    MESSAGE_TYPE_CONFIGS,
+    isSupportedType,
     getMessageLink
 )
+from exceptions import RateLimitExceeded, NotSubscribedError
 from config import settings
 import logging
 
@@ -34,6 +44,15 @@ ANON_HELP_TEXT = (
     "<i>Users that are online in chat or have their notifications ON\n"
     "<b>might see your profile.</b></i>"
 )
+BANNED_TEXT = "❌ You are banned from using this bot 🚮"
+FOREIGN_LINK_TEXT = "❌ That link is not a post or comment from our channel."
+
+@dataclass
+class AnonArgs:
+    parsedLink: Optional[ParsedLink]
+    commentHtml: Optional[str]
+    commentPlain: Optional[str]
+    hasNativeReply: bool
 
 class AnonCommentService:
     def __init__(
@@ -42,11 +61,14 @@ class AnonCommentService:
         userRepo: UserRepository,
         commentMappingRepo: CommentMappingRepository,
         channelThreadRepo: ChannelThreadMappingRepository,
+        rateLimiter: RateLimiterService,
     ):
         self.bot = bot
         self.userRepo = userRepo
         self.commentMappingRepo = commentMappingRepo
         self.channelThreadRepo = channelThreadRepo
+        self.rateLimiter = rateLimiter
+        self.subscriptionChecker = SubscriptionCheckerService(bot, settings.CHANNEL_ID)
         self.groupDispatcher = MessageDispatcher(bot, settings.DISCUSSION_GROUP_ID)
 
     async def handle(self, message: Message) -> None:
@@ -54,13 +76,12 @@ class AnonCommentService:
             await message.reply("Comments are not configured for this bot. Plz DM admin, call him a bitch and tell him to kill himself. Thank you.")
             return
 
-        parsedArgs = self._parseArgs(message)
-        if parsedArgs is None:
+        args = self._parseArgs(message)
+        if args is None:
             await message.reply(ANON_HELP_TEXT, parse_mode="HTML")
             return
 
-        link, commentText, hasNativeReply = parsedArgs
-
+        isInGroup = message.chat.id == settings.DISCUSSION_GROUP_ID
         user = await self.userRepo.getOrCreate(
             telegramId=message.from_user.id,
             username=message.from_user.username,
@@ -68,9 +89,21 @@ class AnonCommentService:
             lastName=message.from_user.last_name
         )
 
-        threadId, replyToMessageId = await self._resolveTarget(message, link, hasNativeReply)
+        if user.isBanned:
+            await self._deny(message, isInGroup, BANNED_TEXT)
+            return
+        isSubscribed, subStatus = await self.subscriptionChecker.isSubscribed(message.from_user.id)
+        if not isSubscribed:
+            await self._deny(message, isInGroup, NotSubscribedError(status=subStatus).userMessage)
+            return
+
+        target = await self._resolveTarget(message, args.parsedLink, args.hasNativeReply)
+        if target == "foreign":
+            await self._deny(message, isInGroup, FOREIGN_LINK_TEXT, deleteInGroup=False)
+            return
+        threadId, replyToMessageId = target
         if threadId is None:
-            if link:
+            if args.parsedLink:
                 await message.reply(
                     "❌ <b>Couldn't find the comment thread for that post.</b>\n\n"
                     "This usually happens for older posts. You have two options:\n\n"
@@ -83,23 +116,21 @@ class AnonCommentService:
                 await message.reply(ANON_HELP_TEXT, parse_mode="HTML")
             return
 
-        if replyToMessageId:
-            replyParams = ReplyParameters(
-                message_id=replyToMessageId,
-                chat_id=settings.DISCUSSION_GROUP_ID
-            )
-        else:
-            replyParams = ReplyParameters(
-                message_id=threadId,
-                chat_id=settings.DISCUSSION_GROUP_ID
-            )
+        # last, so typos / unresolvable targets don't burn a slot
+        try:
+            await self.rateLimiter.acquire(message.from_user.id, scope=RateLimiterService.SCOPE_ANON)
+        except RateLimitExceeded as e:
+            logger.warning(f"[ANON] rate limit exceeded for user {message.from_user.id}")
+            await self._deny(message, isInGroup, e.userMessage)
+            return
 
-        isInGroup = message.chat.id == settings.DISCUSSION_GROUP_ID
+        replyParams = ReplyParameters(
+            message_id=replyToMessageId or threadId,
+            chat_id=settings.DISCUSSION_GROUP_ID
+        )
+
         if isInGroup:
-            try:
-                await self.bot.delete_message(message.chat.id, message.message_id)
-            except Exception as e:
-                logger.warning(f"[ANON] failed to delete user message {message.message_id}: {e}")
+            await self._deleteQuietly(message)
 
         try:
             canEdit = (
@@ -110,7 +141,7 @@ class AnonCommentService:
             result = await self.groupDispatcher.send(
                 message,
                 replyParams=replyParams,
-                overrideCaption=commentText if commentText is not None else ("" if message.caption else None),
+                overrideCaption=args.commentHtml if args.commentHtml is not None else ("" if message.caption else None),
                 replyMarkup=keyboard,
             )
 
@@ -122,13 +153,10 @@ class AnonCommentService:
                 groupMessageId=result.messageId,
                 channelPostId=threadId
             )
-            logger.info(
-                f"[ANON] comment posted: groupMessageId={result.messageId}, "
-                f"threadId={threadId}, userId={user.id}"
-            )
+            logger.info(f"[ANON] comment posted: groupMessageId={result.messageId}, threadId={threadId}")
 
             if replyToMessageId:
-                await self._notifyRepliedAnonAuthor(replyToMessageId, result.messageId, commentText)
+                await self._notifyRepliedAnonAuthor(replyToMessageId, result.messageId, args.commentPlain)
 
             if not isInGroup:
                 confirmKeyboard = buildCommentActionsKeyboard(
@@ -146,19 +174,17 @@ class AnonCommentService:
                         reply_markup=confirmKeyboard,
                     )
                 except Exception:
-                    await message.answer(
-                        confirmationText,
-                        reply_markup=confirmKeyboard,
-                    )
+                    await message.answer(confirmationText, reply_markup=confirmKeyboard)
 
         except Exception as e:
             logger.error(f"[ANON] failed to post comment: {e}", exc_info=True)
-            await message.reply("❌ Failed to post your comment. Please try again.")
+            # in the group the command is already deleted, so it can't be replied to
+            await self._respond(message, isInGroup, "❌ Failed to post your comment. Please try again.")
 
-    def _parseArgs(self, message: Message) -> Optional[Tuple[Optional[str], str, bool]]:
-        text = message.text or message.caption or ""
-        parts = text.split(None, 1)
-        remainder = parts[1].strip() if len(parts) > 1 else ""
+    def _parseArgs(self, message: Message) -> Optional[AnonArgs]:
+        isText = message.text is not None
+        text = (message.text if isText else message.caption) or ""
+        entities = message.entities if isText else message.caption_entities
 
         hasMedia = any([
             message.photo, message.video, message.animation,
@@ -166,42 +192,55 @@ class AnonCommentService:
             message.video_note, message.sticker
         ])
 
-        link = None
-        commentText = remainder
+        stripped = text.lstrip()
+        cmdStart = len(text) - len(stripped)
+        cmdEnd = cmdStart + (len(stripped.split(None, 1)[0]) if stripped else 0)
+        cutEnd = cmdEnd
 
-        if remainder:
-            firstToken = remainder.split()[0]
-            if TelegramLinkParser.parseMessageLink(firstToken):
-                link = firstToken
-                commentText = remainder[len(firstToken):].strip()
+        parsedLink = None
+        rest = text[cmdEnd:]
+        restStripped = rest.lstrip()
+        if restStripped:
+            firstToken = restStripped.split(None, 1)[0]
+            parsedLink = TelegramLinkParser.parseExactLink(firstToken)
+            if parsedLink:
+                cutEnd = cmdEnd + (len(rest) - len(restStripped)) + len(firstToken)
 
-        if not commentText and not hasMedia: return None
+        commentText, commentEntities = cutRange(text, entities, 0, cutEnd)
+        commentText, commentEntities = stripText(commentText, commentEntities)
 
-        hasNativeReply = message.reply_to_message is not None
-        return (link, commentText or None, hasNativeReply)
+        if not commentText and not hasMedia:
+            return None
+        return AnonArgs(
+            parsedLink=parsedLink,
+            commentHtml=entitiesToHtml(commentText, commentEntities) if commentText else None,
+            commentPlain=commentText or None,
+            hasNativeReply=message.reply_to_message is not None,
+        )
 
     async def _resolveTarget(
         self,
         message: Message,
-        link: Optional[str],
+        parsedLink: Optional[ParsedLink],
         hasNativeReply: bool
-    ) -> Tuple[Optional[int], Optional[int]]:
+    ) -> Tuple[Optional[int], Optional[int]] | str:
+        """(threadId, replyToMessageId), (None, None) if unresolvable, or "foreign" for links to other chats"""
         inGroup = message.chat.id == settings.DISCUSSION_GROUP_ID
         groupThreadId = message.message_thread_id if inGroup else None
 
-        # explicit link
-        if link:
-            parsed = TelegramLinkParser.parseMessageLink(link)
-            if parsed:
-                if parsed.commentId:
-                    threadId = await self._lookupThreadId(parsed.messageId)
-                    if threadId is None:
-                        threadId = parsed.commentId
-                    return (threadId, parsed.commentId)
-                else:
-                    threadId = await self._lookupThreadId(parsed.messageId)
-                    if threadId is not None:
-                        return (threadId, None)
+        if parsedLink:
+            own = await classifyOwnLink(self.bot, parsedLink)
+            if own is None:
+                return "foreign"
+            kind, _ = own
+            if kind == "group":
+                return (parsedLink.threadId or parsedLink.messageId, parsedLink.messageId)
+            if parsedLink.commentId:
+                threadId = await self._lookupThreadId(parsedLink.messageId)
+                return (threadId if threadId is not None else parsedLink.commentId, parsedLink.commentId)
+            threadId = await self._lookupThreadId(parsedLink.messageId)
+            if threadId is not None:
+                return (threadId, None)
 
         # in discussion group - using thread from message context
         if inGroup and groupThreadId:
@@ -210,8 +249,28 @@ class AnonCommentService:
                 replyToMessageId = message.reply_to_message.message_id
             return (groupThreadId, replyToMessageId)
 
-        # private chat with no resolvable link
         return (None, None)
+
+    async def _deny(self, message: Message, isInGroup: bool, text: str, deleteInGroup: bool = True) -> None:
+        """in the group the command is public and tied to the user's profile -> delete it and reply in DM"""
+        if isInGroup and deleteInGroup:
+            await self._deleteQuietly(message)
+        await self._respond(message, isInGroup and deleteInGroup, text)
+
+    async def _respond(self, message: Message, privately: bool, text: str) -> None:
+        try:
+            if privately:
+                await self.bot.send_message(message.from_user.id, text, parse_mode="HTML")
+            else:
+                await message.reply(text, parse_mode="HTML")
+        except Exception as e:
+            logger.info(f"[ANON] could not notify user {message.from_user.id}: {e}")
+
+    async def _deleteQuietly(self, message: Message) -> None:
+        try:
+            await self.bot.delete_message(message.chat.id, message.message_id)
+        except Exception as e:
+            logger.warning(f"[ANON] failed to delete user message {message.message_id}: {e}")
 
     async def _notifyRepliedAnonAuthor(
         self,
@@ -230,7 +289,7 @@ class AnonCommentService:
         messageParts = [f'<i><b>💬 Someone replied to <a href="{commentLink}">your anonymous comment</a></b></i>']
         if replyText:
             preview = (replyText[:200] + "...") if len(replyText) > 200 else replyText
-            messageParts.append(f"\n<b>📝 Preview:</b>\n<blockquote>{preview}</blockquote>")
+            messageParts.append(f"\n<b>📝 Preview:</b>\n<blockquote>{html.escape(preview)}</blockquote>")
         messageParts.append(f'\n<b><a href="{replyLink}">View reply</a></b>')
         try:
             await self.bot.send_message(
@@ -239,7 +298,7 @@ class AnonCommentService:
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
-            logger.info(f"[ANON] notified user {mapping.userId} about anon reply to comment {repliedToMessageId}")
+            logger.info(f"[ANON] notified author of comment {repliedToMessageId} about anon reply")
         except Exception as e:
             logger.warning(f"[ANON] failed to notify anon comment author {mapping.userId}: {e}")
 

@@ -37,7 +37,8 @@ class MessageDispatcher:
             raise ChannelPostError(f"Unsupported message type: {contentType}")
         
         config = MESSAGE_TYPE_CONFIGS[contentType]
-        if not hasSpoiler and not overrideCaption and not replyMarkup and not message.forward_origin:
+        # "" = send without caption, so it must not take the verbatim copy path
+        if not hasSpoiler and overrideCaption is None and not replyMarkup and not message.forward_origin:
             try:
                 copyParams = {
                     "chat_id": self.channelChatId,

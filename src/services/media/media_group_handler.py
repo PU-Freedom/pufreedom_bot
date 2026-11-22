@@ -11,13 +11,15 @@ from aiogram.types import (
     ReplyParameters
 )
 from db import UserRepository, MessageMappingRepository
-from services.moderation import NSFWChecker
+from services.moderation import NSFWChecker, NSFWDataManager
 from services.reply_resolver import ReplyResolverService
 from common import (
     buildNSFWPromptKeyboard,
+    buildMessageActionsKeyboard,
     MappingUtil,
     InputMediaType,
     ReplyParametersBuilder,
+    CaptionBuilder,
 )
 from config import settings
 from redis.asyncio import Redis
@@ -198,16 +200,15 @@ class MediaGroupHandler:
 
     async def _promptUser(self, messageIds: List[dict], user, chatId: int, bufferData: dict):
         keyboard = buildNSFWPromptKeyboard(messageIds[0]['messageId'])
-        key = f"nsfw_pending_group:{messageIds[0]['messageId']}"
-        data = {
-            'userId': user.id,
-            'messageIds': [m['messageId'] for m in messageIds],
-            'chatId': chatId,
-            'replyToMessageId': bufferData.get('replyToMessageId'),
-            'replyToChatId': bufferData.get('replyToChatId'),
-            'quoteText': bufferData.get('quoteText')
-        }
-        await self.redis.setex(key, 300, json.dumps(data))
+        await NSFWDataManager(self.redis).storeMediaGroup(
+            firstMessageId=messageIds[0]['messageId'],
+            userId=user.id,
+            messageIds=[m['messageId'] for m in messageIds],
+            chatId=chatId,
+            replyToMessageId=bufferData.get('replyToMessageId'),
+            replyToChatId=bufferData.get('replyToChatId'),
+            quoteText=bufferData.get('quoteText'),
+        )
         await self.bot.send_message(
             chat_id=chatId,
             text=(
@@ -232,11 +233,20 @@ class MediaGroupHandler:
         alias: str = None
     ) -> None:
         try:
-            firstOriginalMessage = await self.bot.forward_message(
-                chat_id=chatId,
-                from_chat_id=chatId,
-                message_id=messageIds[0]['messageId']
-            )
+            logger.info(f"[MEDIA_GROUP] fetching {len(messageIds)} messages in order...")
+            messages = []
+            for idx, messageData in enumerate(messageIds):
+                logger.debug(f"[MEDIA_GROUP] fetching message {idx + 1}/{len(messageIds)}: {messageData['messageId']}")
+                message = await self.bot.forward_message(
+                    chat_id=chatId,
+                    from_chat_id=chatId,
+                    message_id=messageData['messageId']
+                )
+                messages.append(message)
+                await self.bot.delete_message(chatId, message.message_id)
+            logger.info(f"[MEDIA_GROUP] all {len(messages)} messages fetched in order")
+
+            consumedLink = None
             if forceReplyToMessageId and forceReplyToChatId:
                 logger.info(
                     f"[MEDIA_GROUP] using forced reply params "
@@ -250,38 +260,23 @@ class MediaGroupHandler:
                     source="MEDIA_GROUP_FORCED"
                 )
             else:
-                replyParams = await self.replyResolver.resolve(firstOriginalMessage, settings.CHANNEL_ID)
+                replyParams, consumedLink = await self.replyResolver.resolveWithLink(messages[0], settings.CHANNEL_ID)
                 if replyParams:
                     logger.info(
                         f"[MEDIA_GROUP] == OK == reply params: "
                         f"messageId={replyParams.message_id}, chatId={replyParams.chat_id}"
                     )
                 else:
-                    logger.warning(f"[MEDIA_GROUP] == X == NO REPLY PARAMS")            
-            await self.bot.delete_message(chatId, firstOriginalMessage.message_id)
+                    logger.info(f"[MEDIA_GROUP] no reply params")
 
-            logger.info(f"[MEDIA_GROUP] fetching {len(messageIds)} messages in order...")
-            messages = []
-            for idx, messageData in enumerate(messageIds):
-                logger.debug(f"[MEDIA_GROUP] fetching message {idx + 1}/{len(messageIds)}: {messageData['messageId']}")
-                message = await self.bot.forward_message(
-                    chat_id=chatId,
-                    from_chat_id=chatId,
-                    message_id=messageData['messageId']
-                )
-                messages.append(message)
-                await self.bot.delete_message(chatId, message.message_id)
-            
-            logger.info(f"[MEDIA_GROUP] all {len(messages)} messages fetched in order")
             mediaGroup = []
+            parseMode = None
             for idx, message in enumerate(messages):
                 if idx == 0:
-                    from common import CaptionBuilder
                     caption, parseMode = CaptionBuilder.buildCaption(
                         message,
                         addWarning=addWarning,
-                        isReplyLinkToBeRemoved=True,
-                        hasReply=bool(replyParams),
+                        consumedLink=consumedLink,
                     )
                     if alias:
                         caption = (caption or "") + f"\n✍️ <i>{alias}</i>"
@@ -336,7 +331,6 @@ class MediaGroupHandler:
                     channelMessageId=sentMessage.message_id
                 )
             
-            from common import buildMessageActionsKeyboard
             keyboard = buildMessageActionsKeyboard(
                 sentMessages[0].message_id,
                 canEdit=False

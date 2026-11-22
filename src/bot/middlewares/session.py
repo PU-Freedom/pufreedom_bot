@@ -59,6 +59,7 @@ class SessionMiddleware(BaseMiddleware):
                 userRepo,
                 commentMappingRepo,
                 channelThreadRepo,
+                rateLimiter,
             )
             data["session"] = session
             data["userRepo"] = userRepo

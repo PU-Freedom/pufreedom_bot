@@ -5,6 +5,7 @@ from aiogram.filters import CommandStart, Command
 from common import checkUserNotBanned, handleMessageErrors, settings
 from services import MessageForwarderService, EditService, AnonCommentService
 from exceptions import BotException, RateLimitExceeded, NotSubscribedError
+from db import UserRepository
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ async def handleAnon(message: Message, anonCommentService: AnonCommentService):
 async def handleMessage(
     message: Message,
     messageForwarder: MessageForwarderService,
-    editService: EditService
+    editService: EditService,
+    userRepo: UserRepository,  # needed by @checkUserNotBanned - aiogram only injects declared params
 ):
     if message.from_user.id == 777000 or message.from_user.is_bot: return
     wasEdited = await editService.processEdit(message)

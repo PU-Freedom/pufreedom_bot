@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     
     RATE_LIMIT_MESSAGES: int = 5
     RATE_LIMIT_WINDOW_SECONDS: int = 60
-    
+
+    ANON_RATE_LIMIT_MESSAGES: int = 5
+    ANON_RATE_LIMIT_WINDOW_SECONDS: int = 60
+
     ENABLE_NSFW_CHECK: bool = True
     ENFORCED_NSFW_CHECK: bool = False
     NSFW_DETECTION_THRESHOLD: float = 0.6

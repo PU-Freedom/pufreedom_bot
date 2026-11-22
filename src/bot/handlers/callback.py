@@ -225,7 +225,7 @@ async def handleNSFWCancel(
 ):
     messageId = int(callback.data.split(":")[1])
     nsfwDataManager = NSFWDataManager(messageForwarder.redis)
-    await nsfwDataManager.cancel(messageId)
+    await nsfwDataManager.cancel(callback.message.chat.id, messageId)
     await callback.message.edit_text("🚫 Message cancelled")
     await callback.answer()
 
@@ -237,55 +237,63 @@ async def _handleNSFWDecision(
     hasSpoiler: bool
 ) -> None:
     messageId = int(callback.data.split(":")[1])
+    chatId = callback.message.chat.id
     nsfwDataManager = NSFWDataManager(messageForwarder.redis)
 
-    singleMediaData = await nsfwDataManager.retrieveSingleMedia(messageId)
+    singleMediaData = await nsfwDataManager.claimSingleMedia(chatId, messageId)
     if singleMediaData:
-        originalMessage = await _fetchAndDeleteForwardedMessage(
-            bot, callback.from_user.id, singleMediaData['messageChatId'], singleMediaData['messageId']
-        )
-        user = await messageForwarder.userRepo.getById(singleMediaData['userId'])
-        await messageForwarder._sendToChannel(
-            originalMessage, 
-            user, 
-            hasSpoiler=hasSpoiler,
-            addWarning=False,
-            forceReplyToMessageId=singleMediaData.get('replyToMessageId'),
-            forceReplyToChatId=singleMediaData.get('replyToChatId'),
-            originalUserMessageId=singleMediaData['messageId'],
-            forceQuoteText=singleMediaData.get('quoteText')
-        )
-        await nsfwDataManager.deleteSingleMedia(messageId)
+        try:
+            originalMessage = await _fetchAndDeleteForwardedMessage(
+                bot, callback.from_user.id, singleMediaData['messageChatId'], singleMediaData['messageId']
+            )
+            user = await messageForwarder.userRepo.getById(singleMediaData['userId'])
+            await messageForwarder._sendToChannel(
+                originalMessage,
+                user,
+                hasSpoiler=hasSpoiler,
+                addWarning=False,
+                forceReplyToMessageId=singleMediaData.get('replyToMessageId'),
+                forceReplyToChatId=singleMediaData.get('replyToChatId'),
+                originalUserMessageId=singleMediaData['messageId'],
+                forceQuoteText=singleMediaData.get('quoteText'),
+                stripReplyLink=singleMediaData.get('stripReplyLink', False),
+            )
+        except Exception:
+            await nsfwDataManager.restoreSingleMedia(chatId, messageId, singleMediaData)
+            raise
         await callback.message.delete()
         await callback.answer()
         return
-    
-    mediaGroupData = await nsfwDataManager.retrieveMediaGroup(messageId)
+
+    mediaGroupData = await nsfwDataManager.claimMediaGroup(chatId, messageId)
     if not mediaGroupData:
         await callback.answer("❌ Request expired", show_alert=True)
         return
-    
+
     messageIds = [
         {
-            'messageId': messageId,
+            'messageId': groupMessageId,
             'chatId': mediaGroupData['chatId'],
             'userId': mediaGroupData['userId']
         }
-        for messageId in mediaGroupData['messageIds']
+        for groupMessageId in mediaGroupData['messageIds']
     ]
-    user = await messageForwarder.userRepo.getById(mediaGroupData['userId'])
-    await mediaGroupHandler.sendToChannel(
-        messageIds,
-        user,
-        mediaGroupData['chatId'],
-        hasSpoiler=hasSpoiler,
-        addWarning=False,
-        forceReplyToMessageId=mediaGroupData.get('replyToMessageId'),
-        forceReplyToChatId=mediaGroupData.get('replyToChatId'),
-        forceQuoteText=mediaGroupData.get('quoteText'),
-        alias=user.alias
-    )
-    await nsfwDataManager.deleteMediaGroup(messageId)
+    try:
+        user = await messageForwarder.userRepo.getById(mediaGroupData['userId'])
+        await mediaGroupHandler.sendToChannel(
+            messageIds,
+            user,
+            mediaGroupData['chatId'],
+            hasSpoiler=hasSpoiler,
+            addWarning=False,
+            forceReplyToMessageId=mediaGroupData.get('replyToMessageId'),
+            forceReplyToChatId=mediaGroupData.get('replyToChatId'),
+            forceQuoteText=mediaGroupData.get('quoteText'),
+            alias=user.alias
+        )
+    except Exception:
+        await nsfwDataManager.restoreMediaGroup(chatId, messageId, mediaGroupData)
+        raise
     await callback.message.delete()
     await callback.answer()
 

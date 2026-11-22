@@ -6,11 +6,19 @@ import json
 logger = logging.getLogger(__name__)
 
 class NSFWDataManager:
-    """for nsfw check data storage and retrieval from redis"""
+    """keys are scoped by chat id - bot api message ids are only unique within a chat"""
     def __init__(self, redis: Redis):
         self.redis = redis
         self.ttl = 600 # 10mins
-    
+
+    @staticmethod
+    def _singleKey(chatId: int, messageId: int) -> str:
+        return f"nsfw_pending:{chatId}:{messageId}"
+
+    @staticmethod
+    def _groupKey(chatId: int, firstMessageId: int) -> str:
+        return f"nsfw_pending_group:{chatId}:{firstMessageId}"
+
     async def storeSingleMedia(
         self,
         messageId: int,
@@ -18,23 +26,21 @@ class NSFWDataManager:
         messageChatId: int,
         replyToMessageId: Optional[int] = None,
         replyToChatId: Optional[int] = None,
-        quoteText: Optional[str] = None
+        quoteText: Optional[str] = None,
+        stripReplyLink: bool = False,
     ) -> None:
-        key = f"nsfw_pending:{messageId}"
         data = {
             'userId': userId,
             'messageChatId': messageChatId,
             'messageId': messageId,
             'replyToMessageId': replyToMessageId,
             'replyToChatId': replyToChatId,
-            'quoteText': quoteText
+            'quoteText': quoteText,
+            'stripReplyLink': stripReplyLink,
         }
-        if quoteText:
-            logger.info(f"[NSFW_STORE] saving quote: {quoteText[:50]}...")
-
-        await self.redis.setex(key, self.ttl, json.dumps(data))
+        await self.redis.setex(self._singleKey(messageChatId, messageId), self.ttl, json.dumps(data))
         logger.info(f"[NSFW_STORE] stored single media data for message {messageId}")
-    
+
     async def storeMediaGroup(
         self,
         firstMessageId: int,
@@ -45,7 +51,6 @@ class NSFWDataManager:
         replyToChatId: Optional[int] = None,
         quoteText: Optional[str] = None
     ) -> None:
-        key = f"nsfw_pending_group:{firstMessageId}"
         data = {
             'userId': userId,
             'messageIds': messageIds,
@@ -54,33 +59,27 @@ class NSFWDataManager:
             'replyToChatId': replyToChatId,
             'quoteText': quoteText
         }
-        if quoteText:
-            logger.info(f"[NSFW_STORE :: MEDIA GROUP] saving quote for group: {quoteText[:50]}...")
-        
-        await self.redis.setex(key, self.ttl, json.dumps(data))
+        await self.redis.setex(self._groupKey(chatId, firstMessageId), self.ttl, json.dumps(data))
         logger.info(f"[NSFW_STORE :: MEDIA GROUP] stored data for group {firstMessageId}")
-    
-    async def retrieveSingleMedia(self, messageId: int) -> Optional[Dict[str, Any]]:
-        key = f"nsfw_pending:{messageId}"
-        data = await self.redis.get(key)
-        if data: return json.loads(data)
-        return None
-    
-    async def retrieveMediaGroup(self, messageId: int) -> Optional[Dict[str, Any]]:
-        key = f"nsfw_pending_group:{messageId}"
-        data = await self.redis.get(key)
-        if data: return json.loads(data)
-        return None
-    
-    async def deleteSingleMedia(self, messageId: int) -> None:
-        key = f"nsfw_pending:{messageId}"
-        await self.redis.delete(key)
-    
-    async def deleteMediaGroup(self, messageId: int) -> None:
-        key = f"nsfw_pending_group:{messageId}"
-        await self.redis.delete(key)
-    
-    async def cancel(self, messageId: int) -> None:
-        await self.deleteSingleMedia(messageId)
-        await self.deleteMediaGroup(messageId)
+
+    async def _pop(self, key: str) -> Optional[Dict[str, Any]]:
+        """atomic get+delete so a double tap can't post twice"""
+        async with self.redis.pipeline(transaction=True) as pipe:
+            value, _ = await pipe.get(key).delete(key).execute()
+        return json.loads(value) if value else None
+
+    async def claimSingleMedia(self, chatId: int, messageId: int) -> Optional[Dict[str, Any]]:
+        return await self._pop(self._singleKey(chatId, messageId))
+
+    async def claimMediaGroup(self, chatId: int, messageId: int) -> Optional[Dict[str, Any]]:
+        return await self._pop(self._groupKey(chatId, messageId))
+
+    async def restoreSingleMedia(self, chatId: int, messageId: int, data: Dict[str, Any]) -> None:
+        await self.redis.setex(self._singleKey(chatId, messageId), self.ttl, json.dumps(data))
+
+    async def restoreMediaGroup(self, chatId: int, messageId: int, data: Dict[str, Any]) -> None:
+        await self.redis.setex(self._groupKey(chatId, messageId), self.ttl, json.dumps(data))
+
+    async def cancel(self, chatId: int, messageId: int) -> None:
+        await self.redis.delete(self._singleKey(chatId, messageId), self._groupKey(chatId, messageId))
         logger.info(f"[NSFW_STORE] cancelled NSFW check for message {messageId}")

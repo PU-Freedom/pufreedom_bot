@@ -3,6 +3,9 @@ from typing import Callable, Any
 from aiogram.types import Message, CallbackQuery
 from db import UserRepository, MessageMappingRepository
 from config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 def checkUserNotBanned(handler: Callable) -> Callable:
     @wraps(handler)
@@ -10,9 +13,13 @@ def checkUserNotBanned(handler: Callable) -> Callable:
         event = args[0] if args else None
         if not event:
             return await handler(*args, **kwargs)
-        
+
         userRepo: UserRepository = kwargs.get('userRepo')
         if not userRepo:
+            logger.error(
+                f"[GUARD] checkUserNotBanned on '{handler.__name__}' got no userRepo - "
+                f"add a `userRepo` parameter to the handler, ban check is NOT running"
+            )
             return await handler(*args, **kwargs)
         
         userId = None

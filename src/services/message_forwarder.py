@@ -12,9 +12,11 @@ from common import (
     buildNSFWPromptKeyboard,
     buildAliasKeyboard,
     MappingUtil,
-    TelegramLinkParser,
     ReplyParametersBuilder,
     entitiesToHtml,
+    removeLink,
+    LinkMatch,
+    NSFW_WARNING_HTML,
 )
 from exceptions import (
     MessageForwardError,
@@ -73,7 +75,11 @@ class MessageForwarderService:
                 logger.info(f"[SUB_CHECK] cleared alias for unsubscribed user {user.telegramId}")
             raise NotSubscribedError(status=subStatus)
 
-        await self.rateLimiter.checkRateLimit(message.from_user.id)
+        # counted on arrival, not after sending - nsfw prompts and albums send later from a different message
+        allowed = await self.rateLimiter.acquire(message.from_user.id, groupId=message.media_group_id)
+        if not allowed:
+            logger.info(f"[RATE_LIMIT] dropping item of rejected album {message.media_group_id}")
+            return
         if message.media_group_id:
             await self.mediaGroupHandler.handleMediaGroupMessage(message, user)
             return
@@ -86,10 +92,11 @@ class MessageForwarderService:
 
     async def _handleNSFWCheck(self, message: Message, user):
         logger.info(f"[NSFW_CHECK] checking messageId - {message.message_id}")
-        replyParams = await self.replyResolver.resolve(message, self.CHANNEL_ID)
+        replyParams, consumedLink = await self.replyResolver.resolveWithLink(message, self.CHANNEL_ID)
         replyChannelMessageId = replyParams.message_id if replyParams else None
         replyChannelChatId = replyParams.chat_id if replyParams else None
         quoteText = message.quote.text if message.quote else None
+        stripReplyLink = consumedLink is not None
         if settings.ENFORCED_NSFW_CHECK:
             isSafe, reason = await self.nsfwChecker.checkMessage(self.bot, message)
             hasSpoiler = addWarning = False
@@ -106,7 +113,8 @@ class MessageForwarderService:
                 message, user, hasSpoiler=hasSpoiler, addWarning=addWarning,
                 forceReplyToMessageId=replyChannelMessageId,
                 forceReplyToChatId=replyChannelChatId,
-                forceQuoteText=quoteText
+                forceQuoteText=quoteText,
+                stripReplyLink=stripReplyLink,
             )
         else:
             await self.nsfwDataManager.storeSingleMedia(
@@ -115,7 +123,8 @@ class MessageForwarderService:
                 messageChatId=message.chat.id,
                 replyToMessageId=replyChannelMessageId,
                 replyToChatId=replyChannelChatId,
-                quoteText=quoteText
+                quoteText=quoteText,
+                stripReplyLink=stripReplyLink,
             )
             await message.reply(
                 "<b>📸 Media detected</b>\n\n"
@@ -134,32 +143,31 @@ class MessageForwarderService:
         forceReplyToMessageId: int = None,
         forceReplyToChatId: int = None,
         originalUserMessageId: int = None,
-        forceQuoteText: str = None
+        forceQuoteText: str = None,
+        stripReplyLink: bool = False,
     ) -> None:
+        """stripReplyLink: forced reply target came from a link in the text, so remove that link"""
         result = None
         try:
-            replyParams = await self._resolveReplyParams(
-                message, forceReplyToMessageId, forceReplyToChatId, forceQuoteText
+            replyParams, consumedLink = await self._resolveReplyParams(
+                message, forceReplyToMessageId, forceReplyToChatId, forceQuoteText, stripReplyLink
             )
+            isText = message.text is not None
+            text = message.text if isText else message.caption
+            entities = message.entities if isText else message.caption_entities
+
             overrideCaption = None
-            if replyParams and not message.reply_to_message and not message.external_reply:
-                messageText = message.text or message.caption or ""
-                if messageText:
-                    entities = message.entities or message.caption_entities
-                    htmlText = entitiesToHtml(messageText, entities) if entities else messageText
-                    extractedLink = TelegramLinkParser.extractLinkFromText(htmlText)
-                    if extractedLink:
-                        cleanedText = htmlText.replace(extractedLink, "").strip()
-                        logger.info(f"[FORWARDER] removing link from message: {extractedLink}")
-                        overrideCaption = cleanedText if cleanedText else None
+            if consumedLink and text:
+                cleanedText, cleanedEntities = removeLink(text, entities, consumedLink)
+                logger.info(f"[FORWARDER] removing consumed reply link: {consumedLink.url}")
+                if cleanedText:
+                    overrideCaption = entitiesToHtml(cleanedText, cleanedEntities)
+                elif not isText:
+                    overrideCaption = ""
 
             if addWarning:
-                warningText = (
-                    "<blockquote><b>⚠️ NSFW content warning</b>\n"
-                    "This media was detected as NSFW</blockquote>\n\n"
-                )
-                baseText = overrideCaption or message.caption or message.text or ""
-                overrideCaption = warningText + baseText
+                baseText = overrideCaption if overrideCaption is not None else entitiesToHtml(text, entities)
+                overrideCaption = NSFW_WARNING_HTML + baseText
 
             alias = user.alias
             result = await self.dispatcher.send(
@@ -182,7 +190,6 @@ class MessageForwarderService:
                     await self.redis.setex(f"pending_alias:{result.messageId}", 60, alias)
                     logger.info(f"[ALIAS] stored pending alias for channel msg {result.messageId}")
 
-            await self.rateLimiter.recordMessage(message.from_user.id)
             mappingUserMessageId = originalUserMessageId or message.message_id
             await MappingUtil.createAndLog(
                 self.messageMappingRepo,
@@ -204,26 +211,27 @@ class MessageForwarderService:
         message: Message,
         forceReplyToMessageId: int = None,
         forceReplyToChatId: int = None,
-        forceQuoteText: str = None
-    ) -> ReplyParameters | None:
+        forceQuoteText: str = None,
+        stripReplyLink: bool = False,
+    ) -> tuple[ReplyParameters | None, LinkMatch | None]:
         if forceReplyToMessageId and forceReplyToChatId:
             logger.info(
                 f"[FORWARDER] using forced reply: "
                 f"messageId={forceReplyToMessageId}, chatId={forceReplyToChatId}, "
                 f"hasQuote={forceQuoteText is not None}"
             )
-            return ReplyParametersBuilder.build(
+            replyParams = ReplyParametersBuilder.build(
                 messageId=forceReplyToMessageId,
                 chatId=forceReplyToChatId,
                 quoteText=forceQuoteText,
                 source="FORWARDER_FORCED"
             )
-        replyParams = await self.replyResolver.resolve(message, self.CHANNEL_ID)
-        if replyParams:
-            logger.info(f"[FORWARDER] resolved reply: messageId={replyParams.message_id}, chatId={replyParams.chat_id}")
-        else:
-            logger.info(f"[FORWARDER] no reply params")
-        return replyParams
+            consumedLink = None
+            if stripReplyLink:
+                # re-find on this message so offsets/entity identity match its own text
+                _, consumedLink = await self.replyResolver.findOwnLink(message)
+            return replyParams, consumedLink
+        return await self.replyResolver.resolveWithLink(message, self.CHANNEL_ID)
     
     async def _sendConfirmation(self, originalMessage: Message, result) -> None:
         keyboard = None
