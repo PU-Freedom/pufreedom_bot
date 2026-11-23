@@ -1,8 +1,15 @@
 .git
 .github
+.forgejo
 .idea
+.vscode
 .env
 .env.*
 venv
-__pycache__
-*.py[cod]
+.venv
+deploy
+scripts
+**/__pycache__
+**/*.py[cod]
+*.md
+LICENSE

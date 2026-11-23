@@ -4,7 +4,6 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
-from db import Base
 from config import settings, dbManager, redisManager
 from bot import (
     private,
@@ -36,16 +35,10 @@ async def setCommands(bot: Bot):
     await bot.set_my_commands(commands)
     logger.info(f"{sep} BOT COMMANDS SET {sep}")
 
-async def createTables():
-    async with dbManager.engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info(f"{sep} db tables created {sep}")
-
 async def main():
     try:
         logger.info(f"{sep} DB INIT {sep}")
         dbManager.init()
-        await createTables()
         logger.info(f"{sep} REDIS INIT {sep}")
         await redisManager.init()
         bot = Bot(

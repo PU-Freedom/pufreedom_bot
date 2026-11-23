@@ -11,9 +11,7 @@ from sqlalchemy import pool
 from alembic import context
 
 from config.settings import settings
-from db.models.base import Base
-from db.models.user import User                        # noqa: F401 — must be imported for autogenerate
-from db.models.message_mapping import MessageMapping   # noqa: F401
+from db.models import Base  # importing the package registers every model for autogenerate
 
 
 # this is the Alembic Config object, which provides

@@ -1,0 +1,24 @@
+[project]
+name = "pufreedom-bot"
+version = "0.1.0"
+description = "yk"
+license = "AGPL-3.0-only"
+requires-python = "==3.11.*"
+dependencies = [
+    "aiogram==3.17.0",
+    "sqlalchemy[asyncio]==2.0.37",
+    "asyncpg==0.30.0",
+    "psycopg2-binary==2.9.10",
+    "alembic==1.14.0",
+    "redis[hiredis]==5.2.1",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    "python-dotenv==1.0.1",
+    "python-dateutil==2.9.0",
+]
+
+[project.optional-dependencies]
+nsfw = ["nudenet>=3.4"]
+
+[tool.uv]
+package = false

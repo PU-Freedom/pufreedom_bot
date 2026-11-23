@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     REDIS_URL: str
     REDIS_DB: int = 0
     
-    RATE_LIMIT_MESSAGES: int = 5
-    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_MESSAGES: int = 1
+    RATE_LIMIT_WINDOW_SECONDS: int = 10
 
     ANON_RATE_LIMIT_MESSAGES: int = 5
     ANON_RATE_LIMIT_WINDOW_SECONDS: int = 60

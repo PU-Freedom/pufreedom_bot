@@ -32,16 +32,4 @@ def downgrade() -> None:
     with op.batch_alter_table('users', schema=None) as batch_op:
         batch_op.drop_column('isAdmin')
 
-    op.create_table('rate_limit_logs',
-    sa.Column('userId', sa.BIGINT(), autoincrement=False, nullable=False),
-    sa.Column('messageCount', sa.INTEGER(), autoincrement=False, nullable=False),
-    sa.Column('id', sa.BIGINT(), autoincrement=True, nullable=False),
-    sa.Column('createdAt', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), autoincrement=False, nullable=False),
-    sa.Column('updatedAt', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), autoincrement=False, nullable=False),
-    sa.ForeignKeyConstraint(['userId'], ['users.id'], name='rate_limit_logs_userId_fkey', ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name='rate_limit_logs_pkey')
-    )
-    with op.batch_alter_table('rate_limit_logs', schema=None) as batch_op:
-        batch_op.create_index('ix_rate_limit_logs_userId', ['userId'], unique=False)
-
     # ### end Alembic commands ###
