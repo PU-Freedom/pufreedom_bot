@@ -13,6 +13,7 @@ from services import (
     ReplyResolverService,
     EditService,
     AnonCommentService,
+    PostKeyboardService,
 )
 
 class SessionMiddleware(BaseMiddleware):
@@ -44,7 +45,7 @@ class SessionMiddleware(BaseMiddleware):
             commentMappingRepo = CommentMappingRepository(session)
             channelThreadRepo = ChannelThreadMappingRepository(session)
             replyResolver = ReplyResolverService(bot, messageMappingRepo)
-            editService = EditService(bot, redis, messageMappingRepo)
+            editService = EditService(bot, redis, messageMappingRepo, channelThreadRepo)
             messageForwarder = MessageForwarderService(
                 bot,
                 userRepo,
@@ -71,5 +72,6 @@ class SessionMiddleware(BaseMiddleware):
             data["commentMappingRepo"] = commentMappingRepo
             data["channelThreadRepo"] = channelThreadRepo
             data["anonCommentService"] = anonCommentService
+            data["postKeyboards"] = messageForwarder.postKeyboards
             return await handler(event, data)
         

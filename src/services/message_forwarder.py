@@ -7,10 +7,10 @@ from services.media import MediaGroupHandler
 from services.messaging import MessageDispatcher
 from services.moderation import NSFWChecker, NSFWDataManager
 from services.subscription_checker import SubscriptionCheckerService
+from services.post_keyboard import PostKeyboardService
 from common import (
     buildMessageActionsKeyboard,
     buildNSFWPromptKeyboard,
-    buildAliasKeyboard,
     MappingUtil,
     buildTextOverride,
 )
@@ -47,6 +47,7 @@ class MessageForwarderService:
         self.mediaGroupHandler = MediaGroupHandler(bot, messageMappingRepo, nsfwChecker, redis)
         self.nsfwDataManager = NSFWDataManager(redis)
         self.subscriptionChecker = SubscriptionCheckerService(bot, self.CHANNEL_ID)
+        self.postKeyboards = PostKeyboardService(bot, redis)
 
     async def forwardMessage(self, message: Message) -> None:
         self._logIncoming(message)
@@ -122,21 +123,9 @@ class MessageForwarderService:
                 replyParams=replyParams,
                 newText=buildTextOverride(message, consumedLink, addWarning),
                 forceSpoiler=hasSpoiler,
+                replyMarkup=PostKeyboardService.build(user.alias),
             )
-
-            alias = user.alias
-            if alias:
-                try:
-                    await self.bot.edit_message_reply_markup(
-                        chat_id=self.CHANNEL_ID,
-                        message_id=result.messageId,
-                        reply_markup=buildAliasKeyboard(alias)
-                    )
-                except Exception as e:
-                    logger.warning(f"[ALIAS] failed to attach alias keyboard to {result.messageId}: {e}")
-                if settings.DISCUSSION_GROUP_ID:
-                    await self.redis.setex(f"pending_alias:{result.messageId}", 60, alias)
-                    logger.info(f"[ALIAS] stored pending alias for channel msg {result.messageId}")
+            await self.postKeyboards.onPostSent(result.messageId, user.alias)
 
             await MappingUtil.createAndLog(
                 self.messageMappingRepo,

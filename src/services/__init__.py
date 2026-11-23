@@ -6,3 +6,4 @@ from .moderation import *
 from .media import *
 from .subscription_checker import *
 from .anon_comment import *
+from .post_keyboard import *

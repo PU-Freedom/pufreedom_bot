@@ -1,10 +1,5 @@
-def buildEditModeMessage(formattedText: str, isCaption: bool) -> str:
-    separator = '-' * 10
+def buildEditModeMessage(isCaption: bool) -> str:
     return (
-        f"<b>✏️ Edit mode activated</b>\n\n"
-        f"<b>Current text:</b>\n"
-        f"{separator}\n"
-        f"<blockquote>{formattedText}</blockquote>\n"
-        f"{separator}\n"
-        f"<b>Send the new {'caption' if isCaption else 'text'}</b>"
+        "<b>✏️ Edit mode activated</b>\n\n"
+        f"<b>Send the new {'caption' if isCaption else 'text'}</b> - the current version is above ☝️"
     )

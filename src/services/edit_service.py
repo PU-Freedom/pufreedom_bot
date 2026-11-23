@@ -5,17 +5,31 @@ from aiogram.types import Message, ReplyParameters
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from redis.asyncio import Redis
 from config import settings
-from common import isMediaMessage, buildMessageActionsKeyboard, hasCustomEmoji, CUSTOM_EMOJI_NOTE
-from db import MessageMappingRepository
+from common import (
+    isMediaMessage,
+    buildMessageActionsKeyboard,
+    buildCommentActionsKeyboard,
+    hasCustomEmoji,
+    CUSTOM_EMOJI_NOTE,
+)
+from db import MessageMappingRepository, ChannelThreadMappingRepository
+from services.post_keyboard import PostKeyboardService
 
 logger = logging.getLogger(__name__)
 
 class EditService:
     """service to handle message editing for messages sent to channel"""
-    def __init__(self, bot: Bot, redis: Redis, messageMappingRepo: MessageMappingRepository):
+    def __init__(
+        self,
+        bot: Bot,
+        redis: Redis,
+        messageMappingRepo: MessageMappingRepository,
+        channelThreadRepo: ChannelThreadMappingRepository,
+    ):
         self.bot = bot
         self.redis = redis
         self.messageMappingRepo = messageMappingRepo
+        self.channelThreadRepo = channelThreadRepo
     
     async def isInEditMode(self, userId: int) -> bool:
         key = f"editing:{userId}"
@@ -64,7 +78,6 @@ class EditService:
             isComment = editData.get("isComment", False)
             confirmationText = "<b>💗🥰 Message edited successfully ☺️💓</b>"
             if isComment:
-                from common import buildCommentActionsKeyboard
                 keyboard = buildCommentActionsKeyboard(canEdit=True, groupMessageId=editData["channelMessageId"])
             else:
                 keyboard = buildMessageActionsKeyboard(editData["channelMessageId"], canEdit=True)
@@ -111,11 +124,11 @@ class EditService:
         channelMessageId = editData["channelMessageId"]
         targetChatId = editData.get("targetChatId", settings.CHANNEL_ID)
         isComment = editData.get("isComment", False)
-        keyboard = None
-        
+        # telegram drops the inline keyboard on any edit that doesn't resend it
         if isComment:
-            from common import buildCommentActionsKeyboard
             keyboard = buildCommentActionsKeyboard(canEdit=True)
+        else:
+            keyboard = await self._postKeyboard(targetChatId, channelMessageId)
 
         if editData.get("isCaption", False):
             await self._editCaption(message, channelMessageId, targetChatId, keyboard)
@@ -128,6 +141,14 @@ class EditService:
                 channelMessageId=channelMessageId,
                 lastEditMessageId=message.message_id
             )
+
+    async def _postKeyboard(self, channelChatId: int, channelMessageId: int):
+        mapping = await self.messageMappingRepo.getByChannelMessage(channelChatId, channelMessageId)
+        alias = mapping.user.alias if mapping and mapping.user else None
+        if not alias:
+            return None
+        thread = await self.channelThreadRepo.getByChannelPostId(channelMessageId) if settings.DISCUSSION_GROUP_ID else None
+        return PostKeyboardService.build(alias, thread.groupThreadId if thread else None)
 
     async def _editCaption(self, message: Message, channelMessageId: int, targetChatId: int, replyMarkup=None):
         newContent = message.text or message.caption

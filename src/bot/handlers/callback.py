@@ -3,7 +3,6 @@ from aiogram.types import CallbackQuery, ReplyParameters
 from common import (
     requireMessageOwnership,
     isCaption,
-    entitiesToHtml,
     handleCallbackErrors,
     handleDeleteErrors,
     handleEditErrors,
@@ -104,29 +103,13 @@ async def handleCommentEditRequest(
         return
 
     try:
-        groupMessage = await _fetchAndDeleteForwardedMessage(
-            bot, callback.from_user.id, settings.DISCUSSION_GROUP_ID, groupMessageId
-        )
-        isCaptionFlag = isCaption(groupMessage)
-        currentText = groupMessage.caption if isCaptionFlag else (groupMessage.text or "")
-        currentEntities = groupMessage.caption_entities if isCaptionFlag else groupMessage.entities
-        formattedText = entitiesToHtml(currentText, currentEntities) if currentText else "(no text)"
-
-        await editService.activateEditMode(
-            userId=callback.from_user.id,
-            channelMessageId=groupMessageId,
+        await _startEditMode(
+            callback, bot, editService,
+            fromChatId=settings.DISCUSSION_GROUP_ID,
+            messageId=groupMessageId,
             userMessageId=mapping.userMessageId,
-            isCaption=isCaptionFlag,
-            targetChatId=settings.DISCUSSION_GROUP_ID,
             isComment=True,
         )
-        await bot.send_message(
-            chat_id=callback.from_user.id,
-            text=buildEditModeMessage(formattedText, isCaptionFlag),
-            parse_mode="HTML",
-            reply_markup=buildCancelEditKeyboard()
-        )
-        await callback.answer()
     except Exception as e:
         logger.error(f"[COMMENT_EDIT] failed: {e}", exc_info=True)
         await callback.answer("❌ Failed to start edit mode", show_alert=True)
@@ -148,43 +131,17 @@ async def handleEditRequest(
     editService: EditService,
     **kwargs,
 ):
-    channelMessageId = kwargs['channelMessageId']
-    mapping = kwargs['mapping']
-    channelMessage = await _fetchAndDeleteForwardedMessage(
-        bot, callback.from_user.id, settings.CHANNEL_ID, channelMessageId
+    await _startEditMode(
+        callback, bot, editService,
+        fromChatId=settings.CHANNEL_ID,
+        messageId=kwargs['channelMessageId'],
+        userMessageId=kwargs['mapping'].userMessageId,
     )
-    isCaptionFlag = isCaption(channelMessage)
-    currentText = channelMessage.caption if isCaptionFlag else (channelMessage.text or "")
-    currentEntities = channelMessage.caption_entities if isCaptionFlag else channelMessage.entities
-    formattedText = entitiesToHtml(currentText, currentEntities) if currentText else "(no text)"
-    logger.debug(f'isCaption flag - {isCaptionFlag}')
-    await editService.activateEditMode(
-        userId=callback.from_user.id,
-        channelMessageId=channelMessageId,
-        userMessageId=mapping.userMessageId,
-        isCaption=isCaptionFlag
-    )
-    instructions = buildEditModeMessage(formattedText, isCaptionFlag)
-    cancelKeyboard = buildCancelEditKeyboard()
-    try:
-        await callback.message.answer(
-            instructions,
-            parse_mode="HTML",
-            reply_markup=cancelKeyboard,
-            reply_parameters=ReplyParameters(
-                message_id=mapping.channelMessageId,
-                chat_id=settings.CHANNEL_ID
-            )
-        )
-    except Exception as e:
-        logger.warning(f"[EDIT] reply_parameters failed: {e}, sending without")
-        await callback.message.answer(
-            instructions,
-            parse_mode="HTML",
-            reply_markup=cancelKeyboard
-        )
-    await callback.answer()
-        
+
+@router.callback_query(F.data.startswith("alias:"))
+async def handleAliasTap(callback: CallbackQuery):
+    await callback.answer(f"✍️ Posted by {callback.data.split(':', 1)[1]}")
+
 @router.callback_query(F.data.startswith("nsfw_safe:"))
 @handleCallbackErrors("Failed to process your decision")
 async def handleNSFWSafe(
@@ -241,7 +198,30 @@ async def _handleNSFWDecision(
     await callback.message.delete()
     await callback.answer()
 
-async def _fetchAndDeleteForwardedMessage(bot: Bot, userId: int, fromChatId: int, messageId: int):
-    msg = await bot.forward_message(chat_id=userId, from_chat_id=fromChatId, message_id=messageId)
-    await bot.delete_message(chat_id=userId, message_id=msg.message_id)
-    return msg
+async def _startEditMode(
+    callback: CallbackQuery,
+    bot: Bot,
+    editService: EditService,
+    fromChatId: int,
+    messageId: int,
+    userMessageId: int,
+    isComment: bool = False,
+) -> None:
+    # the forwarded copy is the preview - it keeps all formatting and can be copied from
+    preview = await bot.forward_message(chat_id=callback.from_user.id, from_chat_id=fromChatId, message_id=messageId)
+    isCaptionFlag = isCaption(preview)
+    await editService.activateEditMode(
+        userId=callback.from_user.id,
+        channelMessageId=messageId,
+        userMessageId=userMessageId,
+        isCaption=isCaptionFlag,
+        targetChatId=fromChatId,
+        isComment=isComment,
+    )
+    await bot.send_message(
+        chat_id=callback.from_user.id,
+        text=buildEditModeMessage(isCaptionFlag),
+        reply_markup=buildCancelEditKeyboard(),
+        reply_parameters=ReplyParameters(message_id=preview.message_id),
+    )
+    await callback.answer()

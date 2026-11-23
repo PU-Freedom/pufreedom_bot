@@ -1,6 +1,6 @@
 from typing import Optional
-from datetime import datetime
 from sqlalchemy import select, func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.models.user import User
 from db.repositories.base import BaseRepository
@@ -22,24 +22,21 @@ class UserRepository(BaseRepository[User]):
         firstName: str = "",
         lastName: Optional[str] = None
     ) -> User:
-        user = await self.getByTelegramId(telegramId)
-        if user:
-            user.lastActiveAt = datetime.now()
-            if username != user.username:
-                user.username = username
-            if firstName != user.firstName:
-                user.firstName = firstName
-            if lastName != user.lastName:
-                user.lastName = lastName
-            await self.session.flush()
-            return user
-        
-        return await self.create(
-            telegramId=telegramId,
-            username=username,
-            firstName=firstName,
-            lastName=lastName
+        # atomic - concurrent first messages (album items) from a new user would otherwise race on the unique insert
+        profile = {"username": username, "firstName": firstName, "lastName": lastName}
+        stmt = (
+            insert(User)
+            .values(telegramId=telegramId, **profile)
+            .on_conflict_do_update(
+                index_elements=[User.telegramId],
+                set_={**profile, "lastActiveAt": func.now(), "updatedAt": func.now()},
+            )
+            .returning(User)
         )
+        result = await self.session.execute(
+            select(User).from_statement(stmt).execution_options(populate_existing=True)
+        )
+        return result.scalar_one()
     
     async def banUserByTelegramId(self, telegramId: int) -> bool:
         result = await self.session.execute(
